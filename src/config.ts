@@ -1,0 +1,86 @@
+import { randomBytes } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
+import { isAbsolute, normalize } from 'node:path';
+import { z } from 'zod';
+import type { MapConfig, PluginConfig } from './types.js';
+
+const pointSchema = z.object({
+  x: z.number().finite().min(0),
+  y: z.number().finite().min(0),
+});
+
+export const mapConfigSchema = z.object({
+  width: z.number().int().positive().max(10000),
+  height: z.number().int().positive().max(10000),
+  cameras: z.array(z.object({
+    id: z.string().min(1).max(128),
+    name: z.string().min(1).max(128),
+    position: pointSchema,
+    headingDegrees: z.number().finite().min(0).lt(360).optional(),
+  })).max(512),
+}).superRefine((config, ctx) => {
+  for (const [index, camera] of config.cameras.entries()) {
+    if (camera.position.x > config.width || camera.position.y > config.height) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['cameras', index, 'position'],
+        message: 'camera position must be inside map bounds',
+      });
+    }
+  }
+});
+
+export const pluginConfigSchema = z.object({
+  name: z.string().min(1).max(128).default('Person Tracker Map'),
+  mapImagePath: z.string().optional(),
+  mapConfigPath: z.string().optional(),
+  bindHost: z.string().default('127.0.0.1'),
+  port: z.number().int().min(0).max(65535).default(0),
+  adminToken: z.string().min(24).optional(),
+  protect: z.object({
+    host: z.string().optional(),
+    username: z.string().optional(),
+    password: z.string().optional(),
+    ignoreTls: z.boolean().default(false),
+    pollSeconds: z.number().int().min(2).default(5),
+  }).optional(),
+  peopleTtlSeconds: z.number().int().min(10).default(300),
+  ffmpegPath: z.string().min(1).default('ffmpeg'),
+});
+
+export type ResolvedPluginConfig = z.infer<typeof pluginConfigSchema> & {
+  adminToken: string;
+};
+
+export function resolvePluginConfig(raw: PluginConfig): ResolvedPluginConfig {
+  const parsed = pluginConfigSchema.parse(raw);
+  return {
+    ...parsed,
+    adminToken: parsed.adminToken ?? randomBytes(32).toString('hex'),
+  };
+}
+
+export function requireAbsoluteSafePath(pathValue: string, fieldName: string): string {
+  const normalized = normalize(pathValue);
+  if (!isAbsolute(normalized)) {
+    throw new Error(`${fieldName} must be an absolute path`);
+  }
+  if (normalized.includes('\0')) {
+    throw new Error(`${fieldName} contains invalid characters`);
+  }
+  return normalized;
+}
+
+export async function loadMapConfig(configPath?: string): Promise<MapConfig> {
+  if (!configPath) {
+    return {
+      width: 1280,
+      height: 720,
+      cameras: [],
+    };
+  }
+
+  const safePath = requireAbsoluteSafePath(configPath, 'mapConfigPath');
+  const content = await readFile(safePath, 'utf8');
+  return mapConfigSchema.parse(JSON.parse(content));
+}

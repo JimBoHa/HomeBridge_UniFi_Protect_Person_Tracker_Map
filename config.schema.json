@@ -1,0 +1,65 @@
+{
+  "pluginAlias": "UniFiProtectPersonTrackerMap",
+  "pluginType": "platform",
+  "singular": true,
+  "schema": {
+    "type": "object",
+    "properties": {
+      "name": {
+        "title": "Camera Name",
+        "type": "string",
+        "default": "Person Tracker Map"
+      },
+      "mapImagePath": {
+        "title": "Map Image Path",
+        "type": "string",
+        "description": "Absolute local path to a PNG/JPEG floor plan or site map."
+      },
+      "mapConfigPath": {
+        "title": "Map Config Path",
+        "type": "string",
+        "description": "Absolute local path to JSON camera/device placement config."
+      },
+      "bindHost": {
+        "title": "HTTP Bind Host",
+        "type": "string",
+        "default": "127.0.0.1"
+      },
+      "port": {
+        "title": "HTTP Port",
+        "type": "integer",
+        "default": 0,
+        "minimum": 0,
+        "maximum": 65535
+      },
+      "adminToken": {
+        "title": "Admin Token",
+        "type": "string",
+        "description": "Required for write endpoints. Leave blank to auto-generate on startup."
+      },
+      "protect": {
+        "title": "UniFi Protect",
+        "type": "object",
+        "properties": {
+          "host": { "type": "string" },
+          "username": { "type": "string" },
+          "password": { "type": "string" },
+          "ignoreTls": { "type": "boolean", "default": false },
+          "pollSeconds": { "type": "integer", "default": 5, "minimum": 2 }
+        }
+      },
+      "peopleTtlSeconds": {
+        "title": "Person TTL Seconds",
+        "type": "integer",
+        "default": 300,
+        "minimum": 10
+      },
+      "ffmpegPath": {
+        "title": "FFmpeg Path",
+        "type": "string",
+        "default": "ffmpeg"
+      }
+    },
+    "required": ["name"]
+  }
+}
