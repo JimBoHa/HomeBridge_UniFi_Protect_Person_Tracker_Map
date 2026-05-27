@@ -1,18 +1,21 @@
 <style>
-  .tracker-ui { display: grid; gap: 16px; padding: 4px 0 12px; }
-  .toolbar { align-items: end; display: grid; gap: 12px; grid-template-columns: minmax(240px, 1fr) auto auto; }
-  .layout { display: grid; gap: 16px; grid-template-columns: minmax(0, 1fr) minmax(280px, 360px); }
-  .map-pane { background: #f5f6f2; border: 1px solid rgba(0,0,0,.14); border-radius: 6px; min-height: 320px; overflow: auto; }
-  #map { display: block; max-width: 100%; }
-  .label, .field-grid span, .camera-row span { display: block; font-size: 12px; font-weight: 600; margin-bottom: 4px; }
-  .status, #selected-label { color: var(--secondary-text-color, #5c6773); font-size: 13px; }
-  .side-pane, .field-grid, .camera-list { display: grid; gap: 10px; }
-  .check { align-items: center; display: flex; gap: 8px; margin-top: 2px; }
-  .camera-tools, .camera-row-actions { align-items: center; display: flex; gap: 8px; }
-  .camera-row { border: 1px solid rgba(0,0,0,.14); border-radius: 6px; display: grid; gap: 8px; padding: 10px; }
+  .tracker-ui { display: grid; gap: 14px; padding-bottom: 12px; }
+  .toolbar { align-items: end; display: grid; gap: 10px; grid-template-columns: minmax(220px, 1fr) auto auto auto; }
+  .layout { display: grid; gap: 14px; grid-template-columns: minmax(0, 1fr) 360px; }
+  .map-pane { background: #f5f6f2; border: 1px solid rgba(0,0,0,.16); border-radius: 6px; min-height: 360px; overflow: auto; position: relative; }
+  #map { cursor: crosshair; display: block; max-width: 100%; }
+  .side-pane, .field-grid, .camera-list, .scale-grid { display: grid; gap: 10px; }
+  .field-grid, .scale-grid { grid-template-columns: 1fr 1fr; }
+  .label, label span, .camera-row span { display: block; font-size: 12px; font-weight: 600; margin-bottom: 4px; }
+  .status, .subtle { color: var(--secondary-text-color, #5c6773); font-size: 13px; }
+  .check { align-items: center; display: flex; gap: 8px; grid-column: 1 / -1; }
+  .tool-row { align-items: center; display: flex; flex-wrap: wrap; gap: 8px; }
+  .section-title { font-size: 13px; font-weight: 700; margin-top: 4px; }
+  .camera-row { border: 1px solid rgba(0,0,0,.14); border-radius: 6px; cursor: grab; display: grid; gap: 8px; padding: 10px; }
   .camera-row.selected { border-color: #2563eb; box-shadow: 0 0 0 1px #2563eb inset; }
+  .camera-row.unplaced { border-style: dashed; }
   .camera-row-fields { display: grid; gap: 8px; grid-template-columns: 1fr 1fr; }
-  @media (max-width: 860px) { .toolbar, .layout, .camera-row-fields { grid-template-columns: 1fr; } }
+  @media (max-width: 900px) { .toolbar, .layout, .field-grid, .scale-grid, .camera-row-fields { grid-template-columns: 1fr; } }
 </style>
 
 <div class="tracker-ui">
@@ -21,25 +24,41 @@
       <label class="label" for="map-file">Map image</label>
       <input id="map-file" type="file" accept="image/png,image/jpeg" class="form-control">
     </div>
-    <div class="status" id="status">Loading configuration...</div>
+    <button id="discover" type="button" class="btn btn-secondary">Discover cameras</button>
+    <button id="set-scale" type="button" class="btn btn-secondary">Set scale</button>
     <button id="save" type="button" class="btn btn-primary">Save</button>
   </section>
 
+  <div class="status" id="status">Loading configuration...</div>
+
   <section class="layout">
-    <div class="map-pane"><canvas id="map" width="1280" height="720"></canvas></div>
+    <div class="map-pane">
+      <canvas id="map" width="1280" height="720"></canvas>
+    </div>
     <aside class="side-pane">
       <div class="field-grid">
         <label><span>Camera name</span><input id="name" class="form-control" type="text" autocomplete="off"></label>
-        <label><span>UniFi Protect host</span><input id="protect-host" class="form-control" type="text" autocomplete="off" placeholder="https://10.0.0.1"></label>
+        <label><span>UniFi Protect host</span><input id="protect-host" class="form-control" type="text" autocomplete="off" placeholder="10.0.0.1"></label>
         <label><span>Username</span><input id="protect-username" class="form-control" type="text" autocomplete="username"></label>
         <label><span>Password</span><input id="protect-password" class="form-control" type="password" autocomplete="current-password"></label>
         <label><span>Poll seconds</span><input id="protect-poll" class="form-control" type="number" min="2" step="1"></label>
         <label class="check"><input id="protect-ignore-tls" type="checkbox"><span>Ignore TLS certificate errors</span></label>
       </div>
-      <div class="camera-tools">
-        <button id="add-camera" type="button" class="btn btn-secondary">Add camera</button>
-        <span id="selected-label"></span>
+
+      <div class="section-title">Scale</div>
+      <div class="scale-grid">
+        <label><span>Pixels</span><input id="scale-pixels" class="form-control" type="number" min="1" step="1"></label>
+        <label><span>Distance</span><input id="scale-distance" class="form-control" type="number" min="0.01" step="0.01"></label>
+        <label><span>Unit</span><select id="scale-unit" class="form-select"><option value="ft">ft</option><option value="m">m</option></select></label>
       </div>
+      <div class="subtle" id="scale-hint">Use Set scale, then click two points on the map.</div>
+
+      <div class="tool-row">
+        <button id="add-camera" type="button" class="btn btn-secondary">Add camera</button>
+        <span class="subtle" id="selected-label"></span>
+      </div>
+
+      <div class="section-title">Cameras</div>
       <div id="camera-list" class="camera-list"></div>
     </aside>
   </section>
@@ -49,44 +68,44 @@
 (() => {
   const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
   const PLATFORM = 'UniFiProtectPersonTrackerMap';
+  const DEFAULT_MAP = { width: 1280, height: 720, cameras: [] };
   const state = {
     blocks: [],
     config: null,
-    map: { width: 1280, height: 720, cameras: [] },
+    map: structuredClone(DEFAULT_MAP),
     image: null,
+    pendingDataUrl: null,
     selectedId: null,
-    updateTimer: null,
+    dragMode: null,
+    scaleMode: false,
+    scalePoints: [],
+    dirty: false,
   };
-  const element = (id) => document.getElementById(id);
-  const canvas = element('map');
+
+  const el = (id) => document.getElementById(id);
+  const canvas = el('map');
   const ctx = canvas.getContext('2d');
   const fields = {
-    name: element('name'),
-    host: element('protect-host'),
-    username: element('protect-username'),
-    password: element('protect-password'),
-    poll: element('protect-poll'),
-    ignoreTls: element('protect-ignore-tls'),
-    file: element('map-file'),
-    status: element('status'),
-    save: element('save'),
-    addCamera: element('add-camera'),
-    cameraList: element('camera-list'),
-    selectedLabel: element('selected-label'),
+    name: el('name'), host: el('protect-host'), username: el('protect-username'), password: el('protect-password'),
+    poll: el('protect-poll'), ignoreTls: el('protect-ignore-tls'), file: el('map-file'), status: el('status'),
+    save: el('save'), discover: el('discover'), addCamera: el('add-camera'), cameraList: el('camera-list'),
+    selectedLabel: el('selected-label'), setScale: el('set-scale'), scalePixels: el('scale-pixels'),
+    scaleDistance: el('scale-distance'), scaleUnit: el('scale-unit'), scaleHint: el('scale-hint'),
   };
 
-  function setStatus(message) {
-    fields.status.textContent = message;
-  }
+  const setStatus = (message) => { fields.status.textContent = message; };
+  const markDirty = (message = 'Unsaved changes.') => { state.dirty = true; setStatus(message); };
+  const clamp = (value, min, max) => Number.isFinite(value) ? Math.max(min, Math.min(max, value)) : min;
+  const sanitizeId = (value) => value.trim().replace(/[^A-Za-z0-9_.:-]/g, '-').slice(0, 128);
 
-  function getConfigBlock() {
+  function currentBlock() {
     const existing = state.blocks.find((block) => block.platform === PLATFORM) ?? state.blocks[0] ?? {};
     return {
       platform: PLATFORM,
       name: 'Person Tracker Map',
       peopleTtlSeconds: 300,
       ffmpegPath: 'ffmpeg',
-      protect: { ignoreTls: false, pollSeconds: 5 },
+      protect: { ignoreTls: true, pollSeconds: 5 },
       ...existing,
     };
   }
@@ -98,6 +117,9 @@
     fields.password.value = state.config.protect?.password ?? '';
     fields.poll.value = String(state.config.protect?.pollSeconds ?? 5);
     fields.ignoreTls.checked = Boolean(state.config.protect?.ignoreTls);
+    fields.scalePixels.value = state.map.scale?.pixels ? String(Math.round(state.map.scale.pixels)) : '';
+    fields.scaleDistance.value = state.map.scale?.distance ? String(state.map.scale.distance) : '';
+    fields.scaleUnit.value = state.map.scale?.unit ?? 'ft';
   }
 
   function syncConfigFromInputs() {
@@ -110,41 +132,40 @@
       ignoreTls: fields.ignoreTls.checked,
       pollSeconds: Math.max(2, Number.parseInt(fields.poll.value, 10) || 5),
     };
-    state.config.mapConfig = { width: state.map.width, height: state.map.height, cameras: state.map.cameras };
+    const pixels = Number.parseFloat(fields.scalePixels.value);
+    const distance = Number.parseFloat(fields.scaleDistance.value);
+    state.map.scale = pixels > 0 && distance > 0 ? { pixels, distance, unit: fields.scaleUnit.value } : undefined;
+    state.config.mapConfig = {
+      width: state.map.width,
+      height: state.map.height,
+      scale: state.map.scale,
+      cameras: state.map.cameras.filter((camera) => camera.position),
+    };
   }
 
-  async function updatePluginConfig() {
+  async function saveAll() {
     syncConfigFromInputs();
-    const nextBlocks = state.blocks.length ? [...state.blocks] : [state.config];
-    const index = nextBlocks.findIndex((block) => block.platform === PLATFORM);
-    if (index >= 0) {
-      nextBlocks[index] = state.config;
-    } else {
-      nextBlocks.push(state.config);
+    if (state.pendingDataUrl) {
+      const result = await homebridge.request('/save-map-image', { dataUrl: state.pendingDataUrl });
+      state.config.mapImagePath = result.path;
+      delete state.config.mapImageData;
+      state.pendingDataUrl = null;
     }
-    state.blocks = await homebridge.updatePluginConfig(nextBlocks);
+    const blocks = state.blocks.length ? [...state.blocks] : [state.config];
+    const index = blocks.findIndex((block) => block.platform === PLATFORM);
+    if (index >= 0) blocks[index] = state.config; else blocks.push(state.config);
+    state.blocks = await homebridge.updatePluginConfig(blocks);
+    await homebridge.savePluginConfig();
+    state.dirty = false;
+    setStatus('Saved. Restart Homebridge for runtime changes to load.');
   }
 
-  function queueUpdate() {
-    window.clearTimeout(state.updateTimer);
-    state.updateTimer = window.setTimeout(async () => {
-      try {
-        await updatePluginConfig();
-        setStatus('Changes staged. Click Save to write config.');
-      } catch (error) {
-        setStatus(error.message);
-        homebridge.toast.error(error.message, 'Config update failed');
-      }
-    }, 250);
-  }
-
-  function loadImage(dataUrl) {
-    return new Promise((resolve, reject) => {
-      const image = new Image();
-      image.onload = () => resolve(image);
-      image.onerror = () => reject(new Error('Map image could not be loaded'));
-      image.src = dataUrl;
-    });
+  function canvasPoint(event) {
+    const rect = canvas.getBoundingClientRect();
+    return {
+      x: Math.round((event.clientX - rect.left) * (canvas.width / rect.width)),
+      y: Math.round((event.clientY - rect.top) * (canvas.height / rect.height)),
+    };
   }
 
   function draw() {
@@ -156,54 +177,73 @@
       ctx.drawImage(state.image, 0, 0, canvas.width, canvas.height);
     } else {
       ctx.strokeStyle = '#d4d4cc';
-      for (let x = 0; x <= canvas.width; x += 80) {
-        ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, canvas.height); ctx.stroke();
-      }
-      for (let y = 0; y <= canvas.height; y += 80) {
-        ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(canvas.width, y); ctx.stroke();
-      }
+      for (let x = 0; x <= canvas.width; x += 80) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, canvas.height); ctx.stroke(); }
+      for (let y = 0; y <= canvas.height; y += 80) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(canvas.width, y); ctx.stroke(); }
     }
+
+    if (state.map.scale?.pixels) {
+      ctx.strokeStyle = '#111827';
+      ctx.lineWidth = 4;
+      ctx.beginPath();
+      ctx.moveTo(24, canvas.height - 58);
+      ctx.lineTo(24 + state.map.scale.pixels, canvas.height - 58);
+      ctx.stroke();
+      ctx.fillStyle = '#111827';
+      ctx.font = '15px sans-serif';
+      ctx.fillText(`${state.map.scale.distance} ${state.map.scale.unit}`, 24, canvas.height - 66);
+    }
+
     for (const camera of state.map.cameras) {
+      if (!camera.position) continue;
       const selected = camera.id === state.selectedId;
       ctx.fillStyle = selected ? '#dc2626' : '#1d4ed8';
       ctx.beginPath();
-      ctx.arc(camera.position.x, camera.position.y, selected ? 10 : 8, 0, Math.PI * 2);
+      ctx.arc(camera.position.x, camera.position.y, selected ? 11 : 9, 0, Math.PI * 2);
       ctx.fill();
+      drawHeading(camera, selected ? '#dc2626' : '#1d4ed8');
       ctx.fillStyle = '#111827';
       ctx.font = '14px sans-serif';
-      ctx.fillText(camera.name, camera.position.x + 12, camera.position.y - 8);
-      if (typeof camera.headingDegrees === 'number') {
-        drawHeading(camera.position.x, camera.position.y, camera.headingDegrees, selected ? '#dc2626' : '#1d4ed8');
-      }
+      ctx.fillText(camera.name, camera.position.x + 14, camera.position.y - 10);
+    }
+
+    if (state.scalePoints.length === 1) {
+      ctx.fillStyle = '#059669';
+      ctx.beginPath();
+      ctx.arc(state.scalePoints[0].x, state.scalePoints[0].y, 6, 0, Math.PI * 2);
+      ctx.fill();
     }
   }
 
-  function drawHeading(x, y, degrees, color) {
-    ctx.save();
-    ctx.translate(x, y);
-    ctx.rotate(degrees * Math.PI / 180);
+  function drawHeading(camera, color) {
+    if (typeof camera.headingDegrees !== 'number') return;
+    const end = headingEnd(camera);
     ctx.strokeStyle = color;
     ctx.fillStyle = color;
-    ctx.lineWidth = 3;
+    ctx.lineWidth = 4;
     ctx.beginPath();
-    ctx.moveTo(14, 0);
-    ctx.lineTo(42, 0);
+    ctx.moveTo(camera.position.x, camera.position.y);
+    ctx.lineTo(end.x, end.y);
     ctx.stroke();
     ctx.beginPath();
-    ctx.moveTo(48, 0);
-    ctx.lineTo(36, -7);
-    ctx.lineTo(36, 7);
-    ctx.closePath();
+    ctx.arc(end.x, end.y, 5, 0, Math.PI * 2);
     ctx.fill();
-    ctx.restore();
+  }
+
+  function headingEnd(camera) {
+    const radians = (camera.headingDegrees ?? 0) * Math.PI / 180;
+    return { x: camera.position.x + Math.cos(radians) * 52, y: camera.position.y + Math.sin(radians) * 52 };
   }
 
   function renderCameraRows() {
     fields.cameraList.textContent = '';
-    fields.selectedLabel.textContent = state.selectedId ? 'Click map to place selected camera.' : 'Select a camera, then click map.';
+    fields.selectedLabel.textContent = state.selectedId ? 'Drag dot to move. Drag arrow tip to face direction.' : 'Drag discovered cameras onto map.';
     for (const camera of state.map.cameras) {
       const row = document.createElement('div');
-      row.className = `camera-row${camera.id === state.selectedId ? ' selected' : ''}`;
+      row.className = `camera-row${camera.id === state.selectedId ? ' selected' : ''}${camera.position ? '' : ' unplaced'}`;
+      row.draggable = true;
+      row.addEventListener('dragstart', (event) => event.dataTransfer.setData('text/plain', camera.id));
+      row.addEventListener('click', () => { state.selectedId = camera.id; renderCameraRows(); draw(); });
+
       const group = document.createElement('div');
       group.className = 'camera-row-fields';
       group.append(
@@ -211,50 +251,44 @@
           const next = sanitizeId(value);
           if (next && !state.map.cameras.some((item) => item !== camera && item.id === next)) {
             if (state.selectedId === camera.id) state.selectedId = next;
-            camera.id = next;
-            queueUpdate();
+            camera.id = next; markDirty(); renderCameraRows(); draw();
           }
         }),
-        labeledInput('Name', camera.name, (value) => {
-          camera.name = value.trim() || camera.id;
-          queueUpdate(); draw();
+        labeledInput('Name', camera.name, (value) => { camera.name = value.trim() || camera.id; markDirty(); draw(); }),
+        labeledNumber('X', camera.position?.x ?? '', (value) => {
+          camera.position ??= { x: 0, y: 0 };
+          camera.position.x = clamp(value, 0, state.map.width); markDirty(); draw();
         }),
-        labeledNumber('X', camera.position.x, (value) => {
-          camera.position.x = clamp(value, 0, state.map.width);
-          queueUpdate(); draw();
-        }),
-        labeledNumber('Y', camera.position.y, (value) => {
-          camera.position.y = clamp(value, 0, state.map.height);
-          queueUpdate(); draw();
+        labeledNumber('Y', camera.position?.y ?? '', (value) => {
+          camera.position ??= { x: 0, y: 0 };
+          camera.position.y = clamp(value, 0, state.map.height); markDirty(); draw();
         }),
         labeledNumber('Heading', camera.headingDegrees ?? '', (value) => {
           camera.headingDegrees = Number.isFinite(value) ? clamp(value, 0, 359.999) : undefined;
-          queueUpdate(); draw();
+          markDirty(); draw();
         }),
       );
+
       const actions = document.createElement('div');
-      actions.className = 'camera-row-actions';
-      const select = document.createElement('button');
-      select.type = 'button';
-      select.className = 'btn btn-secondary';
-      select.textContent = 'Select';
-      select.addEventListener('click', () => {
-        state.selectedId = camera.id;
-        renderCameraRows(); draw();
-      });
-      const remove = document.createElement('button');
-      remove.type = 'button';
-      remove.className = 'btn btn-danger';
-      remove.textContent = 'Delete';
-      remove.addEventListener('click', () => {
+      actions.className = 'tool-row';
+      actions.append(button('Select', 'btn-secondary', () => { state.selectedId = camera.id; renderCameraRows(); draw(); }));
+      actions.append(button('Remove', 'btn-danger', () => {
         state.map.cameras = state.map.cameras.filter((item) => item !== camera);
         if (state.selectedId === camera.id) state.selectedId = state.map.cameras[0]?.id ?? null;
-        renderCameraRows(); draw(); queueUpdate();
-      });
-      actions.append(select, remove);
+        markDirty(); renderCameraRows(); draw();
+      }));
       row.append(group, actions);
       fields.cameraList.append(row);
     }
+  }
+
+  function button(text, className, onClick) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = `btn ${className}`;
+    b.textContent = text;
+    b.addEventListener('click', (event) => { event.stopPropagation(); onClick(); });
+    return b;
   }
 
   function labeledInput(label, value, onChange) {
@@ -283,12 +317,26 @@
     return wrapper;
   }
 
-  function sanitizeId(value) {
-    return value.trim().replace(/[^A-Za-z0-9_.:-]/g, '-').slice(0, 128);
+  function loadImage(dataUrl) {
+    return new Promise((resolve, reject) => {
+      const image = new Image();
+      image.onload = () => resolve(image);
+      image.onerror = () => reject(new Error('Map image could not be loaded'));
+      image.src = dataUrl;
+    });
   }
 
-  function clamp(value, min, max) {
-    return Number.isFinite(value) ? Math.max(min, Math.min(max, value)) : min;
+  function upsertDiscovered(cameras) {
+    let added = 0;
+    for (const camera of cameras) {
+      if (!state.map.cameras.some((item) => item.id === camera.id)) {
+        state.map.cameras.push({ id: camera.id, name: camera.name, position: undefined, headingDegrees: 0 });
+        added += 1;
+      }
+    }
+    renderCameraRows();
+    draw();
+    markDirty(`Discovered ${cameras.length} cameras. Added ${added}. Drag cameras onto map, then Save.`);
   }
 
   fields.file.addEventListener('change', async () => {
@@ -296,29 +344,26 @@
     if (!file) return;
     if (!['image/png', 'image/jpeg'].includes(file.type)) {
       homebridge.toast.error('Choose a PNG or JPEG image.', 'Unsupported file');
-      fields.file.value = '';
       return;
     }
     if (file.size > MAX_IMAGE_BYTES) {
       homebridge.toast.error('Map image must be 10 MB or smaller.', 'File too large');
-      fields.file.value = '';
       return;
     }
     const reader = new FileReader();
     reader.onload = async () => {
       try {
-        const dataUrl = String(reader.result);
-        const image = await loadImage(dataUrl);
-        state.image = image;
-        state.config.mapImageData = dataUrl;
-        state.map.width = Math.min(10000, image.naturalWidth || image.width);
-        state.map.height = Math.min(10000, image.naturalHeight || image.height);
+        state.pendingDataUrl = String(reader.result);
+        state.image = await loadImage(state.pendingDataUrl);
+        state.map.width = Math.min(10000, state.image.naturalWidth || state.image.width);
+        state.map.height = Math.min(10000, state.image.naturalHeight || state.image.height);
         for (const camera of state.map.cameras) {
+          if (!camera.position) continue;
           camera.position.x = clamp(camera.position.x, 0, state.map.width);
           camera.position.y = clamp(camera.position.y, 0, state.map.height);
         }
+        markDirty('Map image loaded. Click Save to write it.');
         draw();
-        queueUpdate();
       } catch (error) {
         homebridge.toast.error(error.message, 'Image load failed');
       }
@@ -326,43 +371,53 @@
     reader.readAsDataURL(file);
   });
 
+  fields.discover.addEventListener('click', async () => {
+    try {
+      syncConfigFromInputs();
+      homebridge.showSpinner();
+      setStatus('Discovering UniFi Protect cameras...');
+      const result = await homebridge.request('/discover-cameras', { protect: state.config.protect });
+      upsertDiscovered(result.cameras ?? []);
+    } catch (error) {
+      homebridge.toast.error(error.message, 'Camera discovery failed');
+      setStatus(error.message);
+    } finally {
+      homebridge.hideSpinner();
+    }
+  });
+
   fields.addCamera.addEventListener('click', () => {
-    const number = state.map.cameras.length + 1;
-    const id = `camera-${number}`;
+    const id = `camera-${state.map.cameras.length + 1}`;
     state.map.cameras.push({
       id,
-      name: `Camera ${number}`,
+      name: `Camera ${state.map.cameras.length + 1}`,
       position: { x: Math.round(state.map.width / 2), y: Math.round(state.map.height / 2) },
+      headingDegrees: 0,
     });
     state.selectedId = id;
+    markDirty();
     renderCameraRows();
     draw();
-    queueUpdate();
   });
 
-  canvas.addEventListener('click', (event) => {
-    const camera = state.map.cameras.find((item) => item.id === state.selectedId);
-    if (!camera) return;
-    const rect = canvas.getBoundingClientRect();
-    camera.position.x = Math.round((event.clientX - rect.left) * (canvas.width / rect.width));
-    camera.position.y = Math.round((event.clientY - rect.top) * (canvas.height / rect.height));
-    renderCameraRows();
-    draw();
-    queueUpdate();
+  fields.setScale.addEventListener('click', () => {
+    state.scaleMode = true;
+    state.scalePoints = [];
+    fields.scaleHint.textContent = 'Click first scale point, then second scale point.';
+    setStatus('Scale mode active.');
   });
 
-  for (const input of [fields.name, fields.host, fields.username, fields.password, fields.poll, fields.ignoreTls]) {
-    input.addEventListener('input', queueUpdate);
-    input.addEventListener('change', queueUpdate);
+  for (const input of [fields.name, fields.host, fields.username, fields.password, fields.poll, fields.ignoreTls, fields.scalePixels, fields.scaleDistance, fields.scaleUnit]) {
+    input.addEventListener('input', () => markDirty());
+    input.addEventListener('change', () => markDirty());
   }
 
   fields.save.addEventListener('click', async () => {
     try {
       homebridge.showSpinner();
-      await updatePluginConfig();
-      await homebridge.savePluginConfig();
-      setStatus('Saved. Restart Homebridge for plugin runtime to load new map.');
-      homebridge.toast.success('Map and camera placements saved.', 'Saved');
+      setStatus('Saving map configuration...');
+      await saveAll();
+      homebridge.toast.success('Map, scale, and camera placements saved.', 'Saved');
     } catch (error) {
       setStatus(error.message);
       homebridge.toast.error(error.message, 'Save failed');
@@ -371,22 +426,94 @@
     }
   });
 
+  canvas.addEventListener('dragover', (event) => event.preventDefault());
+  canvas.addEventListener('drop', (event) => {
+    event.preventDefault();
+    const id = event.dataTransfer.getData('text/plain');
+    const camera = state.map.cameras.find((item) => item.id === id);
+    if (!camera) return;
+    camera.position = canvasPoint(event);
+    camera.headingDegrees ??= 0;
+    state.selectedId = camera.id;
+    markDirty();
+    renderCameraRows();
+    draw();
+  });
+
+  canvas.addEventListener('mousedown', (event) => {
+    const point = canvasPoint(event);
+    if (state.scaleMode) return;
+    for (const camera of state.map.cameras) {
+      if (!camera.position) continue;
+      const heading = headingEnd(camera);
+      if (Math.hypot(point.x - heading.x, point.y - heading.y) <= 12) {
+        state.selectedId = camera.id;
+        state.dragMode = { type: 'heading', id: camera.id };
+        return;
+      }
+      if (Math.hypot(point.x - camera.position.x, point.y - camera.position.y) <= 14) {
+        state.selectedId = camera.id;
+        state.dragMode = { type: 'position', id: camera.id };
+        renderCameraRows();
+        draw();
+        return;
+      }
+    }
+  });
+
+  canvas.addEventListener('mousemove', (event) => {
+    if (!state.dragMode) return;
+    const camera = state.map.cameras.find((item) => item.id === state.dragMode.id);
+    if (!camera?.position) return;
+    const point = canvasPoint(event);
+    if (state.dragMode.type === 'position') {
+      camera.position = { x: clamp(point.x, 0, state.map.width), y: clamp(point.y, 0, state.map.height) };
+    } else {
+      camera.headingDegrees = (Math.atan2(point.y - camera.position.y, point.x - camera.position.x) * 180 / Math.PI + 360) % 360;
+    }
+    markDirty();
+    draw();
+  });
+
+  window.addEventListener('mouseup', () => {
+    if (state.dragMode) {
+      state.dragMode = null;
+      renderCameraRows();
+    }
+  });
+
+  canvas.addEventListener('click', (event) => {
+    const point = canvasPoint(event);
+    if (state.scaleMode) {
+      state.scalePoints.push(point);
+      if (state.scalePoints.length === 2) {
+        const pixels = Math.round(Math.hypot(state.scalePoints[1].x - state.scalePoints[0].x, state.scalePoints[1].y - state.scalePoints[0].y));
+        fields.scalePixels.value = String(pixels);
+        state.scaleMode = false;
+        state.scalePoints = [];
+        fields.scaleHint.textContent = 'Enter real distance for the measured pixel span, then Save.';
+        markDirty('Scale measured. Enter real distance and Save.');
+      }
+      draw();
+    }
+  });
+
   async function init() {
     try {
       homebridge.showSpinner();
       state.blocks = await homebridge.getPluginConfig();
-      state.config = getConfigBlock();
-      state.map = state.config.mapConfig ?? { width: 1280, height: 720, cameras: [] };
+      state.config = currentBlock();
+      state.map = structuredClone(state.config.mapConfig ?? DEFAULT_MAP);
       state.map.cameras = Array.isArray(state.map.cameras) ? state.map.cameras : [];
       state.selectedId = state.map.cameras[0]?.id ?? null;
       if (state.config.mapImageData) {
+        state.pendingDataUrl = state.config.mapImageData;
         state.image = await loadImage(state.config.mapImageData);
       }
       syncInputsFromConfig();
       renderCameraRows();
       draw();
-      setStatus('Ready');
-      await updatePluginConfig();
+      setStatus('Ready. Discover cameras, upload map, drag cameras into place, then Save.');
     } catch (error) {
       setStatus(error.message);
       homebridge.toast.error(error.message, 'Plugin UI failed');

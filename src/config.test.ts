@@ -18,8 +18,9 @@ describe('config validation', () => {
     await expect(loadMapConfig(undefined, {
       width: 100,
       height: 100,
+      scale: { pixels: 50, distance: 10, unit: 'ft' },
       cameras: [{ id: 'front', name: 'Front', position: { x: 10, y: 20 } }],
-    })).resolves.toMatchObject({ width: 100, cameras: [{ id: 'front' }] });
+    })).resolves.toMatchObject({ width: 100, scale: { unit: 'ft' }, cameras: [{ id: 'front' }] });
 
     expect(() => resolvePluginConfig({
       name: 'Map',

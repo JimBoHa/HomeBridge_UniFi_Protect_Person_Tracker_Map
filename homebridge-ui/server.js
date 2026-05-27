@@ -1,0 +1,144 @@
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { Agent, request } from 'undici';
+import { HomebridgePluginUiServer, RequestError } from '@homebridge/plugin-ui-utils';
+
+const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+
+class TrackerMapUiServer extends HomebridgePluginUiServer {
+  constructor() {
+    super();
+    this.onRequest('/save-map-image', this.saveMapImage.bind(this));
+    this.onRequest('/discover-cameras', this.discoverCameras.bind(this));
+    this.ready();
+  }
+
+  async saveMapImage(payload) {
+    const dataUrl = typeof payload?.dataUrl === 'string' ? payload.dataUrl : '';
+    const match = /^data:image\/(png|jpeg);base64,([A-Za-z0-9+/]+={0,2})$/.exec(dataUrl);
+    if (!match) {
+      throw new RequestError('Map image must be a PNG or JPEG.', {});
+    }
+
+    const [, format, base64] = match;
+    const buffer = Buffer.from(base64, 'base64');
+    if (buffer.byteLength > MAX_IMAGE_BYTES) {
+      throw new RequestError('Map image must be 10 MB or smaller.', {});
+    }
+
+    const directory = join(this.homebridgeStoragePath ?? process.cwd(), 'person-tracker-map');
+    await mkdir(directory, { recursive: true });
+    const path = join(directory, `map.${format === 'png' ? 'png' : 'jpg'}`);
+    await writeFile(path, buffer, { mode: 0o600 });
+    return { path };
+  }
+
+  async discoverCameras(payload) {
+    const protect = await this.resolveProtectConfig(payload?.protect);
+    if (!protect.host || !protect.username || !protect.password) {
+      throw new RequestError('UniFi Protect credentials not found.', {});
+    }
+
+    const bootstrap = await fetchBootstrap(protect);
+    return { cameras: extractCameras(bootstrap) };
+  }
+
+  async resolveProtectConfig(inline) {
+    const direct = sanitizeProtect(inline);
+    if (direct.host && direct.username && direct.password) {
+      return direct;
+    }
+
+    const configPath = this.homebridgeConfigPath;
+    if (!configPath) {
+      return direct;
+    }
+
+    try {
+      const config = JSON.parse(await readFile(configPath, 'utf8'));
+      const unifi = Array.isArray(config.platforms)
+        ? config.platforms.find((platform) => platform?.platform === 'UniFi Protect')
+        : undefined;
+      const controller = Array.isArray(unifi?.controllers) ? unifi.controllers[0] : undefined;
+      return {
+        host: direct.host ?? controller?.address,
+        username: direct.username ?? controller?.username,
+        password: direct.password ?? controller?.password,
+        ignoreTls: direct.ignoreTls ?? true,
+      };
+    } catch {
+      return direct;
+    }
+  }
+}
+
+function sanitizeProtect(value) {
+  return {
+    host: typeof value?.host === 'string' ? value.host.trim() : undefined,
+    username: typeof value?.username === 'string' ? value.username : undefined,
+    password: typeof value?.password === 'string' ? value.password : undefined,
+    ignoreTls: Boolean(value?.ignoreTls),
+  };
+}
+
+async function fetchBootstrap(config) {
+  const dispatcher = config.ignoreTls ? new Agent({ connect: { rejectUnauthorized: false } }) : undefined;
+  const login = await request(url(config.host, '/api/auth/login'), {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ username: config.username, password: config.password }),
+    dispatcher,
+  });
+  if (login.statusCode < 200 || login.statusCode > 299) {
+    throw new RequestError(`Protect login failed: ${login.statusCode}`, {});
+  }
+  const cookie = login.headers['set-cookie'];
+  const sessionCookie = Array.isArray(cookie) ? cookie[0]?.split(';')[0] : String(cookie ?? '').split(';')[0];
+  if (!sessionCookie) {
+    throw new RequestError('Protect login did not return a session cookie.', {});
+  }
+
+  const bootstrap = await request(url(config.host, '/proxy/protect/api/bootstrap'), {
+    method: 'GET',
+    headers: { cookie: sessionCookie },
+    dispatcher,
+  });
+  if (bootstrap.statusCode < 200 || bootstrap.statusCode > 299) {
+    throw new RequestError(`Protect bootstrap failed: ${bootstrap.statusCode}`, {});
+  }
+  return bootstrap.body.json();
+}
+
+function url(hostValue, path) {
+  const host = /^https?:\/\//.test(hostValue) ? hostValue : `https://${hostValue}`;
+  const parsed = new URL(host);
+  parsed.pathname = path;
+  parsed.search = '';
+  return parsed.toString();
+}
+
+function extractCameras(payload) {
+  const candidates = Array.isArray(payload?.cameras) ? payload.cameras : [];
+  const cameras = candidates
+    .filter((camera) => camera && typeof camera === 'object')
+    .map((camera) => ({
+      id: stringValue(camera.id) ?? stringValue(camera._id) ?? stringValue(camera.mac),
+      name: stringValue(camera.name) ?? stringValue(camera.marketName) ?? stringValue(camera.mac) ?? 'Camera',
+      mac: stringValue(camera.mac),
+      host: stringValue(camera.host) ?? stringValue(camera.hostAddress) ?? stringValue(camera.ip),
+      model: stringValue(camera.marketName) ?? stringValue(camera.modelKey) ?? stringValue(camera.type),
+    }))
+    .filter((camera) => camera.id);
+
+  const byId = new Map();
+  for (const camera of cameras) {
+    byId.set(camera.id, camera);
+  }
+  return [...byId.values()].sort((a, b) => a.name.localeCompare(b.name));
+}
+
+function stringValue(value) {
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+}
+
+(() => new TrackerMapUiServer())();

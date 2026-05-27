@@ -28,6 +28,11 @@ const mapImageDataSchema = z.string()
 export const mapConfigSchema = z.object({
   width: z.number().int().positive().max(10000),
   height: z.number().int().positive().max(10000),
+  scale: z.object({
+    pixels: z.number().finite().positive().max(10000),
+    distance: z.number().finite().positive().max(100000),
+    unit: z.enum(['ft', 'm']),
+  }).optional(),
   cameras: z.array(z.object({
     id: z.string().min(1).max(128),
     name: z.string().min(1).max(128),

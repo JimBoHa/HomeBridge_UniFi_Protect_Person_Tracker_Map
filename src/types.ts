@@ -14,6 +14,13 @@ export type MapConfig = {
   width: number;
   height: number;
   cameras: CameraPlacement[];
+  scale?: MapScale;
+};
+
+export type MapScale = {
+  pixels: number;
+  distance: number;
+  unit: 'ft' | 'm';
 };
 
 export type ProtectPersonEvent = {
