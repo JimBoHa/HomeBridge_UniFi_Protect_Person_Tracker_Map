@@ -69,6 +69,8 @@
   const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
   const PLATFORM = 'UniFiProtectPersonTrackerMap';
   const DEFAULT_MAP = { width: 1280, height: 720, cameras: [] };
+  const REQUEST_TIMEOUT_MS = 20000;
+  const SAVE_TIMEOUT_MS = 30000;
   const state = {
     blocks: [],
     config: null,
@@ -80,6 +82,7 @@
     scaleMode: false,
     scalePoints: [],
     dirty: false,
+    saving: false,
   };
 
   const el = (id) => document.getElementById(id);
@@ -97,6 +100,14 @@
   const markDirty = (message = 'Unsaved changes.') => { state.dirty = true; setStatus(message); };
   const clamp = (value, min, max) => Number.isFinite(value) ? Math.max(min, Math.min(max, value)) : min;
   const sanitizeId = (value) => value.trim().replace(/[^A-Za-z0-9_.:-]/g, '-').slice(0, 128);
+
+  function withTimeout(promise, message, timeoutMs = REQUEST_TIMEOUT_MS) {
+    let timer;
+    const timeout = new Promise((_, reject) => {
+      timer = window.setTimeout(() => reject(new Error(message)), timeoutMs);
+    });
+    return Promise.race([promise, timeout]).finally(() => window.clearTimeout(timer));
+  }
 
   function currentBlock() {
     const existing = state.blocks.find((block) => block.platform === PLATFORM) ?? state.blocks[0] ?? {};
@@ -146,7 +157,10 @@
   async function saveAll() {
     syncConfigFromInputs();
     if (state.pendingDataUrl) {
-      const result = await homebridge.request('/save-map-image', { dataUrl: state.pendingDataUrl });
+      const result = await withTimeout(
+        homebridge.request('/save-map-image', { dataUrl: state.pendingDataUrl }),
+        'Timed out while saving map image. Try a smaller PNG/JPEG.',
+      );
       state.config.mapImagePath = result.path;
       delete state.config.mapImageData;
       state.pendingDataUrl = null;
@@ -154,8 +168,16 @@
     const blocks = state.blocks.length ? [...state.blocks] : [state.config];
     const index = blocks.findIndex((block) => block.platform === PLATFORM);
     if (index >= 0) blocks[index] = state.config; else blocks.push(state.config);
-    state.blocks = await homebridge.updatePluginConfig(blocks);
-    await homebridge.savePluginConfig();
+    state.blocks = await withTimeout(
+      homebridge.updatePluginConfig(blocks),
+      'Timed out while staging Homebridge config.',
+      SAVE_TIMEOUT_MS,
+    );
+    await withTimeout(
+      homebridge.savePluginConfig(),
+      'Timed out while writing Homebridge config.',
+      SAVE_TIMEOUT_MS,
+    );
     state.dirty = false;
     setStatus('Saved. Restart Homebridge for runtime changes to load.');
   }
@@ -376,7 +398,10 @@
       syncConfigFromInputs();
       homebridge.showSpinner();
       setStatus('Discovering UniFi Protect cameras...');
-      const result = await homebridge.request('/discover-cameras', { protect: state.config.protect });
+      const result = await withTimeout(
+        homebridge.request('/discover-cameras', { protect: state.config.protect }),
+        'Timed out while discovering UniFi Protect cameras.',
+      );
       upsertDiscovered(result.cameras ?? []);
     } catch (error) {
       homebridge.toast.error(error.message, 'Camera discovery failed');
@@ -413,6 +438,9 @@
   }
 
   fields.save.addEventListener('click', async () => {
+    if (state.saving) return;
+    state.saving = true;
+    fields.save.disabled = true;
     try {
       homebridge.showSpinner();
       setStatus('Saving map configuration...');
@@ -422,6 +450,8 @@
       setStatus(error.message);
       homebridge.toast.error(error.message, 'Save failed');
     } finally {
+      state.saving = false;
+      fields.save.disabled = false;
       homebridge.hideSpinner();
     }
   });
