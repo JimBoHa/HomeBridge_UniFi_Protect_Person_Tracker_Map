@@ -1,5 +1,5 @@
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
+import { extname, isAbsolute, join, normalize } from 'node:path';
 import { Agent, request } from 'undici';
 import { HomebridgePluginUiServer, RequestError } from '@homebridge/plugin-ui-utils';
 
@@ -9,6 +9,7 @@ class TrackerMapUiServer extends HomebridgePluginUiServer {
   constructor() {
     super();
     this.onRequest('/save-map-image', this.saveMapImage.bind(this));
+    this.onRequest('/load-map-image', this.loadMapImage.bind(this));
     this.onRequest('/discover-cameras', this.discoverCameras.bind(this));
     this.ready();
   }
@@ -31,6 +32,24 @@ class TrackerMapUiServer extends HomebridgePluginUiServer {
     const path = join(directory, `map.${format === 'png' ? 'png' : 'jpg'}`);
     await writeFile(path, buffer, { mode: 0o600 });
     return { path };
+  }
+
+  async loadMapImage(payload) {
+    const path = typeof payload?.path === 'string' ? normalize(payload.path) : '';
+    if (!isAbsolute(path) || path.includes('\0')) {
+      throw new RequestError('Map image path is invalid.', {});
+    }
+    const extension = extname(path).toLowerCase();
+    const mime = extension === '.png' ? 'image/png' : extension === '.jpg' || extension === '.jpeg' ? 'image/jpeg' : undefined;
+    if (!mime) {
+      throw new RequestError('Map image must be PNG or JPEG.', {});
+    }
+    const fileStat = await stat(path);
+    if (fileStat.size > MAX_IMAGE_BYTES) {
+      throw new RequestError('Map image is too large to preview.', {});
+    }
+    const content = await readFile(path);
+    return { dataUrl: `data:${mime};base64,${content.toString('base64')}` };
   }
 
   async discoverCameras(payload) {

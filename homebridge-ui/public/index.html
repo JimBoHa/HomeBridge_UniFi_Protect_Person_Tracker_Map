@@ -26,7 +26,7 @@
     </div>
     <button id="discover" type="button" class="btn btn-secondary">Discover cameras</button>
     <button id="set-scale" type="button" class="btn btn-secondary">Set scale</button>
-    <button id="save" type="button" class="btn btn-primary">Save</button>
+    <button id="delete-config" type="button" class="btn btn-danger">Delete map configuration</button>
   </section>
 
   <div class="status" id="status">Loading configuration...</div>
@@ -67,24 +67,24 @@
 <script>
 (() => {
   const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
-  const MAX_RENDERED_MAP_BYTES = 10 * 1024 * 1024;
-  const MAX_PDF_RENDER_SIDE = 2400;
+  const MAX_RENDERED_MAP_BYTES = 8 * 1024 * 1024;
+  const MAX_PDF_RENDER_SIDE = 1800;
   const PLATFORM = 'UniFiProtectPersonTrackerMap';
   const DEFAULT_MAP = { width: 1280, height: 720, cameras: [] };
   const REQUEST_TIMEOUT_MS = 20000;
-  const SAVE_TIMEOUT_MS = 30000;
+  const STAGE_TIMEOUT_MS = 30000;
   const state = {
     blocks: [],
     config: null,
     map: structuredClone(DEFAULT_MAP),
     image: null,
-    pendingMapDataUrl: null,
     selectedId: null,
     dragMode: null,
     scaleMode: false,
     scalePoints: [],
     dirty: false,
-    saving: false,
+    stageTimer: null,
+    staging: false,
   };
 
   const el = (id) => document.getElementById(id);
@@ -93,13 +93,17 @@
   const fields = {
     name: el('name'), host: el('protect-host'), username: el('protect-username'), password: el('protect-password'),
     poll: el('protect-poll'), ignoreTls: el('protect-ignore-tls'), file: el('map-file'), status: el('status'),
-    save: el('save'), discover: el('discover'), addCamera: el('add-camera'), cameraList: el('camera-list'),
+    discover: el('discover'), addCamera: el('add-camera'), cameraList: el('camera-list'), deleteConfig: el('delete-config'),
     selectedLabel: el('selected-label'), setScale: el('set-scale'), scalePixels: el('scale-pixels'),
     scaleDistance: el('scale-distance'), scaleUnit: el('scale-unit'), scaleHint: el('scale-hint'),
   };
 
   const setStatus = (message) => { fields.status.textContent = message; };
-  const markDirty = (message = 'Unsaved changes.') => { state.dirty = true; setStatus(message); };
+  const markDirty = (message = 'Unsaved changes. Use the Homebridge Save button at the bottom to persist.') => {
+    state.dirty = true;
+    setStatus(message);
+    queueStageConfig();
+  };
   const clamp = (value, min, max) => Number.isFinite(value) ? Math.max(min, Math.min(max, value)) : min;
   const sanitizeId = (value) => value.trim().replace(/[^A-Za-z0-9_.:-]/g, '-').slice(0, 128);
 
@@ -156,28 +160,34 @@
     };
   }
 
-  async function saveAll() {
+  function buildBlocks() {
     syncConfigFromInputs();
-    if (state.pendingMapDataUrl) {
-      state.config.mapImageData = state.pendingMapDataUrl;
-      delete state.config.mapImagePath;
-      state.pendingMapDataUrl = null;
-    }
     const blocks = state.blocks.length ? [...state.blocks] : [state.config];
     const index = blocks.findIndex((block) => block.platform === PLATFORM);
     if (index >= 0) blocks[index] = state.config; else blocks.push(state.config);
-    state.blocks = await withTimeout(
-      homebridge.updatePluginConfig(blocks),
-      'Timed out while staging Homebridge config.',
-      SAVE_TIMEOUT_MS,
-    );
-    await withTimeout(
-      homebridge.savePluginConfig(),
-      'Timed out while writing Homebridge config.',
-      SAVE_TIMEOUT_MS,
-    );
-    state.dirty = false;
-    setStatus('Saved. Restart Homebridge for runtime changes to load.');
+    return blocks;
+  }
+
+  function queueStageConfig() {
+    window.clearTimeout(state.stageTimer);
+    state.stageTimer = window.setTimeout(() => {
+      void stageConfig();
+    }, 300);
+  }
+
+  async function stageConfig(message = 'Changes staged. Use the Homebridge Save button at the bottom to persist.') {
+    if (state.staging) return;
+    state.staging = true;
+    try {
+      state.blocks = await withTimeout(
+        homebridge.updatePluginConfig(buildBlocks()),
+        'Timed out while staging Homebridge config.',
+        STAGE_TIMEOUT_MS,
+      );
+      setStatus(message);
+    } finally {
+      state.staging = false;
+    }
   }
 
   function canvasPoint(event) {
@@ -359,7 +369,7 @@
     scratch.width = Math.round(viewport.width);
     scratch.height = Math.round(viewport.height);
     await page.render({ canvasContext: scratch.getContext('2d'), viewport }).promise;
-    const dataUrl = scratch.toDataURL('image/png');
+    const dataUrl = scratch.toDataURL('image/jpeg', 0.86);
     if (dataUrlToBytes(dataUrl) > MAX_RENDERED_MAP_BYTES) {
       throw new Error('Rendered PDF map is too large. Use a simpler PDF or export it as a smaller PNG/JPEG.');
     }
@@ -367,9 +377,11 @@
   }
 
   async function loadRasterImage(file) {
-    const dataUrl = await readFileAsDataUrl(file);
+    const originalDataUrl = await readFileAsDataUrl(file);
+    const image = await loadImage(originalDataUrl);
+    const dataUrl = imageToJpegDataUrl(image);
     if (dataUrlToBytes(dataUrl) > MAX_RENDERED_MAP_BYTES) {
-      throw new Error('Map image must be 10 MB or smaller after rendering.');
+      throw new Error('Map image must be 8 MB or smaller after rendering.');
     }
     return { dataUrl, image: await loadImage(dataUrl) };
   }
@@ -386,6 +398,18 @@
   function dataUrlToBytes(dataUrl) {
     const base64 = dataUrl.slice(dataUrl.indexOf(',') + 1);
     return Math.floor(base64.length * 3 / 4);
+  }
+
+  function imageToJpegDataUrl(image) {
+    const scale = Math.min(MAX_PDF_RENDER_SIDE / Math.max(image.naturalWidth || image.width, image.naturalHeight || image.height), 1);
+    const scratch = document.createElement('canvas');
+    scratch.width = Math.max(1, Math.round((image.naturalWidth || image.width) * scale));
+    scratch.height = Math.max(1, Math.round((image.naturalHeight || image.height) * scale));
+    const scratchCtx = scratch.getContext('2d');
+    scratchCtx.fillStyle = '#ffffff';
+    scratchCtx.fillRect(0, 0, scratch.width, scratch.height);
+    scratchCtx.drawImage(image, 0, 0, scratch.width, scratch.height);
+    return scratch.toDataURL('image/jpeg', 0.86);
   }
 
   function upsertDiscovered(cameras) {
@@ -419,7 +443,14 @@
       homebridge.showSpinner();
       setStatus(isPdf ? 'Rendering first PDF page...' : 'Loading map image...');
       const loaded = isPdf ? await loadPdfAsImage(file) : await loadRasterImage(file);
-      state.pendingMapDataUrl = loaded.dataUrl;
+      setStatus('Saving map image to Homebridge storage...');
+      const saved = await withTimeout(
+        homebridge.request('/save-map-image', { dataUrl: loaded.dataUrl }),
+        'Timed out while saving map image. Try a smaller or simpler map file.',
+        STAGE_TIMEOUT_MS,
+      );
+      state.config.mapImagePath = saved.path;
+      delete state.config.mapImageData;
       state.image = loaded.image;
       state.map.width = Math.min(10000, state.image.naturalWidth || state.image.width);
       state.map.height = Math.min(10000, state.image.naturalHeight || state.image.height);
@@ -428,7 +459,7 @@
         camera.position.x = clamp(camera.position.x, 0, state.map.width);
         camera.position.y = clamp(camera.position.y, 0, state.map.height);
       }
-      markDirty(isPdf ? 'PDF first page rendered. Click Save to write it.' : 'Map image loaded. Click Save to write it.');
+      await stageConfig(isPdf ? 'PDF first page saved. Use the Homebridge Save button at the bottom to persist.' : 'Map image saved. Use the Homebridge Save button at the bottom to persist.');
       draw();
     } catch (error) {
       homebridge.toast.error(error.message, 'Map load failed');
@@ -482,23 +513,20 @@
     input.addEventListener('change', () => markDirty());
   }
 
-  fields.save.addEventListener('click', async () => {
-    if (state.saving) return;
-    state.saving = true;
-    fields.save.disabled = true;
-    try {
-      homebridge.showSpinner();
-      setStatus('Saving map configuration...');
-      await saveAll();
-      homebridge.toast.success('Map, scale, and camera placements saved.', 'Saved');
-    } catch (error) {
-      setStatus(error.message);
-      homebridge.toast.error(error.message, 'Save failed');
-    } finally {
-      state.saving = false;
-      fields.save.disabled = false;
-      homebridge.hideSpinner();
-    }
+  fields.deleteConfig.addEventListener('click', async () => {
+    state.image = null;
+    state.map = structuredClone(DEFAULT_MAP);
+    state.selectedId = null;
+    delete state.config.mapImagePath;
+    delete state.config.mapImageData;
+    delete state.config.mapConfig;
+    delete state.config.mapConfigPath;
+    fields.scalePixels.value = '';
+    fields.scaleDistance.value = '';
+    fields.scaleUnit.value = 'ft';
+    renderCameraRows();
+    draw();
+    await stageConfig('Map configuration deleted. Use the Homebridge Save button at the bottom to persist.');
   });
 
   canvas.addEventListener('dragover', (event) => event.preventDefault());
@@ -554,6 +582,7 @@
     if (state.dragMode) {
       state.dragMode = null;
       renderCameraRows();
+      void stageConfig();
     }
   });
 
@@ -582,8 +611,10 @@
       state.map.cameras = Array.isArray(state.map.cameras) ? state.map.cameras : [];
       state.selectedId = state.map.cameras[0]?.id ?? null;
       if (state.config.mapImageData) {
-        state.pendingMapDataUrl = state.config.mapImageData;
         state.image = await loadImage(state.config.mapImageData);
+      } else if (state.config.mapImagePath) {
+        const loaded = await homebridge.request('/load-map-image', { path: state.config.mapImagePath });
+        state.image = await loadImage(loaded.dataUrl);
       }
       syncInputsFromConfig();
       renderCameraRows();
