@@ -2,6 +2,7 @@
   "name": "homebridge-unifi-protect-person-tracker-map",
   "version": "0.1.0",
   "description": "Homebridge UniFi Protect person tracker map camera overlay.",
+  "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "license": "MIT",
@@ -26,6 +27,7 @@
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
     "lint": "eslint .",
+    "prepare": "npm run build",
     "security": "npm audit --audit-level=moderate --omit=dev",
     "verify": "npm run build && npm run lint && npm test && npm run security"
   },
