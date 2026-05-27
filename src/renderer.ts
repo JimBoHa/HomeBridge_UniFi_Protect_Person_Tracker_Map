@@ -1,15 +1,29 @@
 import { createReadStream } from 'node:fs';
 import { access } from 'node:fs/promises';
 import { extname } from 'node:path';
-import { Writable } from 'node:stream';
+import { Readable, Writable } from 'node:stream';
 import { decodeJPEGFromStream, decodePNGFromStream, encodeJPEGToStream, encodePNGToStream, make, type Bitmap, type CanvasContext } from 'pureimage';
 import { requireAbsoluteSafePath } from './config.js';
 import type { TrackerSnapshot } from './types.js';
 
+export type MapImageSource = {
+  path?: string;
+  dataUrl?: string;
+};
+
 export class MapRenderer {
   private background?: Promise<Bitmap>;
+  private readonly mapImagePath?: string;
+  private readonly mapImageDataUrl?: string;
 
-  public constructor(private readonly mapImagePath?: string) {}
+  public constructor(mapImage?: string | MapImageSource) {
+    if (typeof mapImage === 'string') {
+      this.mapImagePath = mapImage;
+    } else {
+      this.mapImagePath = mapImage?.path;
+      this.mapImageDataUrl = mapImage?.dataUrl;
+    }
+  }
 
   public async renderPng(snapshot: TrackerSnapshot): Promise<Buffer> {
     return this.render(snapshot, 'png');
@@ -33,7 +47,7 @@ export class MapRenderer {
     ctx.fillStyle = '#f7f7f2';
     ctx.fillRect(0, 0, snapshot.map.width, snapshot.map.height);
 
-    if (!this.mapImagePath) {
+    if (!this.mapImagePath && !this.mapImageDataUrl) {
       this.drawGrid(ctx, snapshot.map.width, snapshot.map.height);
       return;
     }
@@ -130,10 +144,12 @@ export class MapRenderer {
   }
 
   private loadBackground(): Promise<Bitmap> {
-    if (!this.mapImagePath) {
+    if (!this.mapImagePath && !this.mapImageDataUrl) {
       throw new Error('No map image configured');
     }
-    this.background ??= loadBitmap(requireAbsoluteSafePath(this.mapImagePath, 'mapImagePath'));
+    this.background ??= this.mapImageDataUrl
+      ? loadBitmapFromDataUrl(this.mapImageDataUrl)
+      : loadBitmap(requireAbsoluteSafePath(this.mapImagePath ?? '', 'mapImagePath'));
     return this.background;
   }
 }
@@ -148,6 +164,18 @@ async function loadBitmap(pathValue: string): Promise<Bitmap> {
     return decodeJPEGFromStream(createReadStream(pathValue));
   }
   throw new Error('Map image must be PNG or JPEG');
+}
+
+async function loadBitmapFromDataUrl(dataUrl: string): Promise<Bitmap> {
+  const match = /^data:image\/(png|jpeg);base64,([A-Za-z0-9+/]+={0,2})$/.exec(dataUrl);
+  if (!match) {
+    throw new Error('Map image data must be a PNG or JPEG data URL');
+  }
+
+  const [, format, base64] = match;
+  const buffer = Buffer.from(base64, 'base64');
+  const stream = Readable.from(buffer);
+  return format === 'png' ? decodePNGFromStream(stream) : decodeJPEGFromStream(stream);
 }
 
 async function encodePng(bitmap: Bitmap): Promise<Buffer> {

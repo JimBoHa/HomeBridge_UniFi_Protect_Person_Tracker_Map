@@ -14,6 +14,8 @@ iOS lock screen widgets cannot be shipped by a Homebridge plugin. The practical 
 
 ## Configuration
 
+Open the plugin settings in Homebridge to upload a PNG/JPEG map, add cameras, and place each camera by selecting it and clicking on the map. The custom settings UI stores the map image and camera placements in Homebridge `config.json`.
+
 ```json
 {
   "platform": "UniFiProtectPersonTrackerMap",

@@ -1,0 +1,56 @@
+<link rel="stylesheet" href="./map-editor.css">
+
+<div class="tracker-ui">
+  <section class="toolbar">
+    <div>
+      <label class="label" for="map-file">Map image</label>
+      <input id="map-file" type="file" accept="image/png,image/jpeg" class="form-control">
+    </div>
+    <div class="status" id="status">Loading configuration...</div>
+    <button id="save" type="button" class="btn btn-primary">Save</button>
+  </section>
+
+  <section class="layout">
+    <div class="map-pane">
+      <canvas id="map" width="1280" height="720"></canvas>
+    </div>
+
+    <aside class="side-pane">
+      <div class="field-grid">
+        <label>
+          <span>Camera name</span>
+          <input id="name" class="form-control" type="text" autocomplete="off">
+        </label>
+        <label>
+          <span>UniFi Protect host</span>
+          <input id="protect-host" class="form-control" type="text" autocomplete="off" placeholder="https://10.0.0.1">
+        </label>
+        <label>
+          <span>Username</span>
+          <input id="protect-username" class="form-control" type="text" autocomplete="username">
+        </label>
+        <label>
+          <span>Password</span>
+          <input id="protect-password" class="form-control" type="password" autocomplete="current-password">
+        </label>
+        <label>
+          <span>Poll seconds</span>
+          <input id="protect-poll" class="form-control" type="number" min="2" step="1">
+        </label>
+        <label class="check">
+          <input id="protect-ignore-tls" type="checkbox">
+          <span>Ignore TLS certificate errors</span>
+        </label>
+      </div>
+
+      <div class="camera-tools">
+        <button id="add-camera" type="button" class="btn btn-secondary">Add camera</button>
+        <span id="selected-label"></span>
+      </div>
+
+      <div id="camera-list" class="camera-list"></div>
+    </aside>
+  </section>
+</div>
+
+<script src="./map-editor.js"></script>

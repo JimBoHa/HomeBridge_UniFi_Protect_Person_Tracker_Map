@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest';
+import { Writable } from 'node:stream';
+import { encodePNGToStream, make } from 'pureimage';
 import { MapRenderer } from './renderer.js';
 import type { TrackerSnapshot } from './types.js';
 
@@ -38,4 +40,30 @@ describe('MapRenderer', () => {
     });
     expect(png.subarray(0, 8).toString('hex')).toBe('89504e470d0a1a0a');
   });
+
+  it('renders an uploaded PNG data URL as the map background', async () => {
+    const renderer = new MapRenderer({ dataUrl: await makePngDataUrl() });
+    const png = await renderer.renderPng({
+      generatedAt: Date.now(),
+      map: { width: 20, height: 20, cameras: [] },
+      people: [],
+    });
+    expect(png.subarray(0, 8).toString('hex')).toBe('89504e470d0a1a0a');
+  });
 });
+
+async function makePngDataUrl(): Promise<string> {
+  const bitmap = make(2, 2);
+  const ctx = bitmap.getContext('2d');
+  ctx.fillStyle = '#ff0000';
+  ctx.fillRect(0, 0, 2, 2);
+  const chunks: Buffer[] = [];
+  const stream = new Writable({
+    write(chunk: Buffer, _encoding, callback) {
+      chunks.push(Buffer.from(chunk));
+      callback();
+    },
+  });
+  await encodePNGToStream(bitmap, stream);
+  return `data:image/png;base64,${Buffer.concat(chunks).toString('base64')}`;
+}

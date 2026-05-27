@@ -14,6 +14,19 @@ describe('config validation', () => {
     expect(() => resolvePluginConfig({ name: 'Map', adminToken: 'short' })).toThrow();
   });
 
+  it('accepts inline map config and rejects unsafe uploaded image data', async () => {
+    await expect(loadMapConfig(undefined, {
+      width: 100,
+      height: 100,
+      cameras: [{ id: 'front', name: 'Front', position: { x: 10, y: 20 } }],
+    })).resolves.toMatchObject({ width: 100, cameras: [{ id: 'front' }] });
+
+    expect(() => resolvePluginConfig({
+      name: 'Map',
+      mapImageData: 'data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg==',
+    })).toThrow('map image');
+  });
+
   it('requires absolute local paths to prevent ambiguous traversal', () => {
     expect(() => requireAbsoluteSafePath('../secret', 'mapImagePath')).toThrow('absolute');
     expect(requireAbsoluteSafePath('/tmp/map.png', 'mapImagePath')).toBe('/tmp/map.png');

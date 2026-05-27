@@ -4,10 +4,26 @@ import { isAbsolute, normalize } from 'node:path';
 import { z } from 'zod';
 import type { MapConfig, PluginConfig } from './types.js';
 
+const MAX_MAP_IMAGE_DATA_BYTES = 10 * 1024 * 1024;
+
 const pointSchema = z.object({
   x: z.number().finite().min(0),
   y: z.number().finite().min(0),
 });
+
+const mapImageDataSchema = z.string()
+  .max(Math.ceil(MAX_MAP_IMAGE_DATA_BYTES * 1.4), 'map image data is too large')
+  .regex(/^data:image\/(?:png|jpeg);base64,[A-Za-z0-9+/]+={0,2}$/, 'map image must be a PNG or JPEG data URL')
+  .superRefine((value, ctx) => {
+    const base64 = value.slice(value.indexOf(',') + 1);
+    const byteLength = Buffer.byteLength(base64, 'base64');
+    if (byteLength > MAX_MAP_IMAGE_DATA_BYTES) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'map image data must be 10 MB or smaller',
+      });
+    }
+  });
 
 export const mapConfigSchema = z.object({
   width: z.number().int().positive().max(10000),
@@ -33,7 +49,9 @@ export const mapConfigSchema = z.object({
 export const pluginConfigSchema = z.object({
   name: z.string().min(1).max(128).default('Person Tracker Map'),
   mapImagePath: z.string().optional(),
+  mapImageData: mapImageDataSchema.optional(),
   mapConfigPath: z.string().optional(),
+  mapConfig: mapConfigSchema.optional(),
   bindHost: z.string().default('127.0.0.1'),
   port: z.number().int().min(0).max(65535).default(0),
   adminToken: z.string().min(24).optional(),
@@ -71,7 +89,11 @@ export function requireAbsoluteSafePath(pathValue: string, fieldName: string): s
   return normalized;
 }
 
-export async function loadMapConfig(configPath?: string): Promise<MapConfig> {
+export async function loadMapConfig(configPath?: string, inlineConfig?: MapConfig): Promise<MapConfig> {
+  if (inlineConfig) {
+    return mapConfigSchema.parse(inlineConfig);
+  }
+
   if (!configPath) {
     return {
       width: 1280,

@@ -2,6 +2,7 @@
   "pluginAlias": "UniFiProtectPersonTrackerMap",
   "pluginType": "platform",
   "singular": true,
+  "customUi": true,
   "schema": {
     "type": "object",
     "properties": {
@@ -15,10 +16,46 @@
         "type": "string",
         "description": "Absolute local path to a PNG/JPEG floor plan or site map."
       },
+      "mapImageData": {
+        "title": "Uploaded Map Image",
+        "type": "string",
+        "description": "PNG/JPEG data URL saved by the plugin settings map editor.",
+        "pattern": "^data:image/(png|jpeg);base64,[A-Za-z0-9+/]+={0,2}$"
+      },
       "mapConfigPath": {
         "title": "Map Config Path",
         "type": "string",
         "description": "Absolute local path to JSON camera/device placement config."
+      },
+      "mapConfig": {
+        "title": "Map Camera Placements",
+        "type": "object",
+        "properties": {
+          "width": { "type": "integer", "minimum": 1, "maximum": 10000 },
+          "height": { "type": "integer", "minimum": 1, "maximum": 10000 },
+          "cameras": {
+            "type": "array",
+            "maxItems": 512,
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": { "type": "string", "minLength": 1, "maxLength": 128 },
+                "name": { "type": "string", "minLength": 1, "maxLength": 128 },
+                "position": {
+                  "type": "object",
+                  "properties": {
+                    "x": { "type": "number", "minimum": 0 },
+                    "y": { "type": "number", "minimum": 0 }
+                  },
+                  "required": ["x", "y"]
+                },
+                "headingDegrees": { "type": "number", "minimum": 0, "exclusiveMaximum": 360 }
+              },
+              "required": ["id", "name", "position"]
+            }
+          }
+        },
+        "required": ["width", "height", "cameras"]
       },
       "bindHost": {
         "title": "HTTP Bind Host",

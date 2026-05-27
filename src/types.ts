@@ -54,7 +54,9 @@ export type ProtectConfig = {
 export type PluginConfig = {
   name?: string;
   mapImagePath?: string;
+  mapImageData?: string;
   mapConfigPath?: string;
+  mapConfig?: MapConfig;
   bindHost?: string;
   port?: number;
   adminToken?: string;
