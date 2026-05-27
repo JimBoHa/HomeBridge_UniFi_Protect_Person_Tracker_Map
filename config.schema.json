@@ -19,7 +19,7 @@
       "mapImageData": {
         "title": "Uploaded Map Image",
         "type": "string",
-        "description": "PNG/JPEG data URL saved by the plugin settings map editor.",
+        "description": "PNG/JPEG data URL saved by the plugin settings map editor. Uploaded PDFs are rendered to PNG first.",
         "pattern": "^data:image/(png|jpeg);base64,[A-Za-z0-9+/]+={0,2}$"
       },
       "mapConfigPath": {

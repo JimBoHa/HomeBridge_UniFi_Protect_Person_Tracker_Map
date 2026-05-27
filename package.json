@@ -34,6 +34,7 @@
   },
   "dependencies": {
     "@homebridge/plugin-ui-utils": "^2.2.4",
+    "pdfjs-dist": "^4.10.38",
     "pureimage": "0.4.18",
     "undici": "^7.16.0",
     "zod": "4.1.7"

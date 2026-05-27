@@ -22,7 +22,7 @@
   <section class="toolbar">
     <div>
       <label class="label" for="map-file">Map image</label>
-      <input id="map-file" type="file" accept="image/png,image/jpeg" class="form-control">
+      <input id="map-file" type="file" accept="image/png,image/jpeg,application/pdf,.pdf" class="form-control">
     </div>
     <button id="discover" type="button" class="btn btn-secondary">Discover cameras</button>
     <button id="set-scale" type="button" class="btn btn-secondary">Set scale</button>
@@ -66,7 +66,9 @@
 
 <script>
 (() => {
-  const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+  const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
+  const MAX_RENDERED_MAP_BYTES = 10 * 1024 * 1024;
+  const MAX_PDF_RENDER_SIDE = 2400;
   const PLATFORM = 'UniFiProtectPersonTrackerMap';
   const DEFAULT_MAP = { width: 1280, height: 720, cameras: [] };
   const REQUEST_TIMEOUT_MS = 20000;
@@ -76,7 +78,7 @@
     config: null,
     map: structuredClone(DEFAULT_MAP),
     image: null,
-    pendingDataUrl: null,
+    pendingMapDataUrl: null,
     selectedId: null,
     dragMode: null,
     scaleMode: false,
@@ -156,14 +158,10 @@
 
   async function saveAll() {
     syncConfigFromInputs();
-    if (state.pendingDataUrl) {
-      const result = await withTimeout(
-        homebridge.request('/save-map-image', { dataUrl: state.pendingDataUrl }),
-        'Timed out while saving map image. Try a smaller PNG/JPEG.',
-      );
-      state.config.mapImagePath = result.path;
-      delete state.config.mapImageData;
-      state.pendingDataUrl = null;
+    if (state.pendingMapDataUrl) {
+      state.config.mapImageData = state.pendingMapDataUrl;
+      delete state.config.mapImagePath;
+      state.pendingMapDataUrl = null;
     }
     const blocks = state.blocks.length ? [...state.blocks] : [state.config];
     const index = blocks.findIndex((block) => block.platform === PLATFORM);
@@ -348,6 +346,48 @@
     });
   }
 
+  async function loadPdfAsImage(file) {
+    const pdfjs = await import('./vendor/pdf.mjs');
+    pdfjs.GlobalWorkerOptions.workerSrc = './vendor/pdf.worker.mjs';
+    const bytes = await file.arrayBuffer();
+    const pdf = await pdfjs.getDocument({ data: bytes }).promise;
+    const page = await pdf.getPage(1);
+    const baseViewport = page.getViewport({ scale: 1 });
+    const scale = Math.min(MAX_PDF_RENDER_SIDE / Math.max(baseViewport.width, baseViewport.height), 2);
+    const viewport = page.getViewport({ scale });
+    const scratch = document.createElement('canvas');
+    scratch.width = Math.round(viewport.width);
+    scratch.height = Math.round(viewport.height);
+    await page.render({ canvasContext: scratch.getContext('2d'), viewport }).promise;
+    const dataUrl = scratch.toDataURL('image/png');
+    if (dataUrlToBytes(dataUrl) > MAX_RENDERED_MAP_BYTES) {
+      throw new Error('Rendered PDF map is too large. Use a simpler PDF or export it as a smaller PNG/JPEG.');
+    }
+    return { dataUrl, image: await loadImage(dataUrl) };
+  }
+
+  async function loadRasterImage(file) {
+    const dataUrl = await readFileAsDataUrl(file);
+    if (dataUrlToBytes(dataUrl) > MAX_RENDERED_MAP_BYTES) {
+      throw new Error('Map image must be 10 MB or smaller after rendering.');
+    }
+    return { dataUrl, image: await loadImage(dataUrl) };
+  }
+
+  function readFileAsDataUrl(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result));
+      reader.onerror = () => reject(new Error('Map file could not be read'));
+      reader.readAsDataURL(file);
+    });
+  }
+
+  function dataUrlToBytes(dataUrl) {
+    const base64 = dataUrl.slice(dataUrl.indexOf(',') + 1);
+    return Math.floor(base64.length * 3 / 4);
+  }
+
   function upsertDiscovered(cameras) {
     let added = 0;
     for (const camera of cameras) {
@@ -364,33 +404,38 @@
   fields.file.addEventListener('change', async () => {
     const file = fields.file.files?.[0];
     if (!file) return;
-    if (!['image/png', 'image/jpeg'].includes(file.type)) {
-      homebridge.toast.error('Choose a PNG or JPEG image.', 'Unsupported file');
+    const isPdf = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
+    const isImage = ['image/png', 'image/jpeg'].includes(file.type);
+    if (!isPdf && !isImage) {
+      homebridge.toast.error('Choose a PNG, JPEG, or PDF map.', 'Unsupported file');
       return;
     }
-    if (file.size > MAX_IMAGE_BYTES) {
-      homebridge.toast.error('Map image must be 10 MB or smaller.', 'File too large');
+    if (file.size > MAX_UPLOAD_BYTES) {
+      homebridge.toast.error('Map upload must be 25 MB or smaller.', 'File too large');
       return;
     }
-    const reader = new FileReader();
-    reader.onload = async () => {
-      try {
-        state.pendingDataUrl = String(reader.result);
-        state.image = await loadImage(state.pendingDataUrl);
-        state.map.width = Math.min(10000, state.image.naturalWidth || state.image.width);
-        state.map.height = Math.min(10000, state.image.naturalHeight || state.image.height);
-        for (const camera of state.map.cameras) {
-          if (!camera.position) continue;
-          camera.position.x = clamp(camera.position.x, 0, state.map.width);
-          camera.position.y = clamp(camera.position.y, 0, state.map.height);
-        }
-        markDirty('Map image loaded. Click Save to write it.');
-        draw();
-      } catch (error) {
-        homebridge.toast.error(error.message, 'Image load failed');
+
+    try {
+      homebridge.showSpinner();
+      setStatus(isPdf ? 'Rendering first PDF page...' : 'Loading map image...');
+      const loaded = isPdf ? await loadPdfAsImage(file) : await loadRasterImage(file);
+      state.pendingMapDataUrl = loaded.dataUrl;
+      state.image = loaded.image;
+      state.map.width = Math.min(10000, state.image.naturalWidth || state.image.width);
+      state.map.height = Math.min(10000, state.image.naturalHeight || state.image.height);
+      for (const camera of state.map.cameras) {
+        if (!camera.position) continue;
+        camera.position.x = clamp(camera.position.x, 0, state.map.width);
+        camera.position.y = clamp(camera.position.y, 0, state.map.height);
       }
-    };
-    reader.readAsDataURL(file);
+      markDirty(isPdf ? 'PDF first page rendered. Click Save to write it.' : 'Map image loaded. Click Save to write it.');
+      draw();
+    } catch (error) {
+      homebridge.toast.error(error.message, 'Map load failed');
+      setStatus(error.message);
+    } finally {
+      homebridge.hideSpinner();
+    }
   });
 
   fields.discover.addEventListener('click', async () => {
@@ -537,7 +582,7 @@
       state.map.cameras = Array.isArray(state.map.cameras) ? state.map.cameras : [];
       state.selectedId = state.map.cameras[0]?.id ?? null;
       if (state.config.mapImageData) {
-        state.pendingDataUrl = state.config.mapImageData;
+        state.pendingMapDataUrl = state.config.mapImageData;
         state.image = await loadImage(state.config.mapImageData);
       }
       syncInputsFromConfig();
