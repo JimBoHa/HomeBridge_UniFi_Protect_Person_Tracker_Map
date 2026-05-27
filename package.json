@@ -33,6 +33,7 @@
   },
   "dependencies": {
     "pureimage": "0.4.18",
+    "undici": "^7.16.0",
     "zod": "4.1.7"
   },
   "devDependencies": {

@@ -1,4 +1,5 @@
 import type { Logger, ProtectConfig, ProtectPersonEvent } from './types.js';
+import { Agent } from 'undici';
 
 export type ProtectEventSink = (event: ProtectPersonEvent) => void;
 
@@ -6,13 +7,16 @@ export class UniFiProtectAdapter {
   private cookie = '';
   private timer?: NodeJS.Timeout;
   private lastEvent = 0;
+  private readonly tlsAgent?: Agent;
 
   public constructor(
     private readonly config: ProtectConfig | undefined,
     private readonly sink: ProtectEventSink,
     private readonly logger: Logger,
     private readonly fetchImpl: typeof fetch = fetch,
-  ) {}
+  ) {
+    this.tlsAgent = config?.ignoreTls ? new Agent({ connect: { rejectUnauthorized: false } }) : undefined;
+  }
 
   public start(): void {
     if (!this.config?.host || !this.config.username || !this.config.password) {
@@ -55,7 +59,8 @@ export class UniFiProtectAdapter {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ username: this.config?.username, password: this.config?.password }),
-    });
+      dispatcher: this.tlsAgent,
+    } as FetchOptions);
     if (!response.ok) {
       throw new Error(`login failed: ${response.status}`);
     }
@@ -69,7 +74,8 @@ export class UniFiProtectAdapter {
   private async requestJson(path: string): Promise<unknown> {
     const response = await this.fetchImpl(this.url(path), {
       headers: { cookie: this.cookie },
-    });
+      dispatcher: this.tlsAgent,
+    } as FetchOptions);
     if (response.status === 401 || response.status === 403) {
       this.cookie = '';
       throw new Error('Protect session expired');
@@ -92,6 +98,10 @@ export class UniFiProtectAdapter {
     return url.toString();
   }
 }
+
+type FetchOptions = RequestInit & {
+  dispatcher?: Agent;
+};
 
 export function extractPersonEvents(payload: unknown, afterTimestamp = 0): ProtectPersonEvent[] {
   const events: ProtectPersonEvent[] = [];
