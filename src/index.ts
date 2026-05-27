@@ -45,7 +45,12 @@ class UniFiProtectPersonTrackerPlatform implements DynamicPlatformPlugin {
     this.httpServer = httpServer;
 
     const snapshotUrl = `http://${config.bindHost}:${actualPort}/snapshot.png`;
-    const accessory = this.getOrCreateAccessory(config.name);
+    const { accessory, isNew } = this.getOrCreateAccessory(config.name);
+    accessory.getService(this.api.hap.Service.AccessoryInformation)
+      ?.setCharacteristic(this.api.hap.Characteristic.Manufacturer, 'JimBoHa')
+      .setCharacteristic(this.api.hap.Characteristic.Model, 'UniFi Protect Person Tracker Map')
+      .setCharacteristic(this.api.hap.Characteristic.SerialNumber, 'person-tracker-map');
+
     const delegate = new MapCameraDelegate(tracker, renderer, snapshotUrl, config.ffmpegPath, this.log);
     accessory.configureController(new this.api.hap.CameraController({
       cameraStreamCount: 2,
@@ -65,6 +70,11 @@ class UniFiProtectPersonTrackerPlatform implements DynamicPlatformPlugin {
         },
       },
     }));
+    if (isNew) {
+      this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
+    } else {
+      this.api.updatePlatformAccessories([accessory]);
+    }
 
     this.protectAdapter = new UniFiProtectAdapter(config.protect, (event) => {
       try {
@@ -79,18 +89,17 @@ class UniFiProtectPersonTrackerPlatform implements DynamicPlatformPlugin {
     this.log.info('Use Bearer admin token for /events, /state, and /map-config write/read endpoints.');
   }
 
-  private getOrCreateAccessory(name: string): PlatformAccessory {
+  private getOrCreateAccessory(name: string): { accessory: PlatformAccessory; isNew: boolean } {
     if (this.accessory) {
       this.accessory.updateDisplayName(name);
-      return this.accessory;
+      return { accessory: this.accessory, isNew: false };
     }
 
     const uuid = this.api.hap.uuid.generate(`${PLUGIN_NAME}:${name}`);
     const accessory = new this.api.platformAccessory(name, uuid, this.api.hap.Categories.CAMERA);
     accessory.context.device = 'person-tracker-map';
-    this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
     this.accessory = accessory;
-    return accessory;
+    return { accessory, isNew: true };
   }
 
   private async shutdown(): Promise<void> {
