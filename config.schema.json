@@ -97,7 +97,7 @@
       "peopleTtlSeconds": {
         "title": "Person TTL Seconds",
         "type": "integer",
-        "default": 604800,
+        "default": 86400,
         "minimum": 10
       },
       "ffmpegPath": {

@@ -25,6 +25,9 @@ type SessionInfo = {
   srtpSalt: Buffer;
   process?: ChildProcessWithoutNullStreams;
   frameTimer?: NodeJS.Timeout;
+  cachedFrame?: Buffer;
+  frameRenderedAt?: number;
+  frameRender?: Promise<void>;
 };
 
 export class MapCameraDelegate implements CameraStreamingDelegate {
@@ -91,7 +94,7 @@ export class MapCameraDelegate implements CameraStreamingDelegate {
     const height = request.video.height || 720;
     const args = [
       '-hide_banner',
-      '-loglevel', 'error',
+      '-loglevel', 'warning',
       '-f', 'mjpeg',
       '-r', String(fps),
       '-i', 'pipe:0',
@@ -115,9 +118,10 @@ export class MapCameraDelegate implements CameraStreamingDelegate {
       `srtp://${session.address}:${session.videoPort}?rtcpport=${session.videoPort}&pkt_size=${request.video.mtu}`,
     ];
 
+    this.logger.info(`Starting map stream ${width}x${height}@${fps}fps to ${session.address}:${session.videoPort} from ${session.localVideoPort}`);
     session.process = spawn(this.ffmpegPath, args);
     session.process.stdin.on('error', (error) => this.logger.debug(`ffmpeg stdin: ${error.message}`));
-    session.process.stderr.on('data', (data: Buffer) => this.logger.debug(`ffmpeg: ${data.toString('utf8').trim()}`));
+    session.process.stderr.on('data', (data: Buffer) => this.logger.warn(`ffmpeg: ${data.toString('utf8').trim()}`));
     session.process.on('exit', (code) => {
       if (session.frameTimer) {
         clearInterval(session.frameTimer);
@@ -125,16 +129,32 @@ export class MapCameraDelegate implements CameraStreamingDelegate {
       }
       if (code && code !== 0) {
         this.logger.warn(`ffmpeg exited with code ${code}`);
+      } else {
+        this.logger.info('Map stream stopped');
       }
     });
-    const writeFrame = (): void => {
-      void this.renderer.renderJpeg(this.tracker.snapshot(), width, height)
+    const refreshFrame = (): void => {
+      if (session.frameRender) {
+        return;
+      }
+
+      session.frameRender = this.renderer.renderJpeg(this.tracker.snapshot(), width, height)
         .then((buffer) => {
-          if (session.process?.stdin.writable) {
-            session.process.stdin.write(buffer);
-          }
+          session.cachedFrame = buffer;
+          session.frameRenderedAt = Date.now();
         })
-        .catch((error: unknown) => this.logger.warn(`stream frame render failed: ${error instanceof Error ? error.message : String(error)}`));
+        .catch((error: unknown) => this.logger.warn(`stream frame render failed: ${error instanceof Error ? error.message : String(error)}`))
+        .finally(() => {
+          session.frameRender = undefined;
+        });
+    };
+    const writeFrame = (): void => {
+      if (!session.cachedFrame || !session.frameRenderedAt || Date.now() - session.frameRenderedAt > 1000) {
+        refreshFrame();
+      }
+      if (session.cachedFrame && session.process?.stdin.writable) {
+        session.process.stdin.write(session.cachedFrame);
+      }
     };
     writeFrame();
     session.frameTimer = setInterval(writeFrame, Math.max(250, Math.floor(1000 / fps)));

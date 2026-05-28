@@ -25,7 +25,7 @@ Open the plugin settings in Homebridge to upload a PNG, JPEG, or PDF map, discov
   "bindHost": "127.0.0.1",
   "port": 0,
   "adminToken": "replace-with-at-least-24-random-characters",
-  "peopleTtlSeconds": 604800,
+  "peopleTtlSeconds": 86400,
   "ffmpegPath": "ffmpeg",
   "protect": {
     "host": "10.0.7.1",

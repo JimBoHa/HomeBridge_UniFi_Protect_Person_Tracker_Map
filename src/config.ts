@@ -67,7 +67,7 @@ export const pluginConfigSchema = z.object({
     ignoreTls: z.boolean().default(false),
     pollSeconds: z.number().int().min(2).default(5),
   }).optional(),
-  peopleTtlSeconds: z.number().int().min(10).default(604800),
+  peopleTtlSeconds: z.number().int().min(10).default(86400),
   ffmpegPath: z.string().min(1).default('ffmpeg'),
 });
 
