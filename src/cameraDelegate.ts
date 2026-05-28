@@ -215,7 +215,7 @@ async function allocateUdpPort(): Promise<number> {
 }
 
 function randomSsrc(): number {
-  return Math.floor(Math.random() * 0xffffffff);
+  return Math.floor(Math.random() * 0x7fffffff);
 }
 
 function frameCacheKey(width: number, height: number): string {
