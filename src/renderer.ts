@@ -94,16 +94,15 @@ export class MapRenderer {
 
   private drawPeople(ctx: CanvasContext, snapshot: TrackerSnapshot): void {
     for (const person of snapshot.people) {
+      ctx.fillStyle = '#ffffff';
+      ctx.beginPath();
+      ctx.arc(person.position.x, person.position.y, 16, 0, Math.PI * 2);
+      ctx.fill();
+
       ctx.fillStyle = person.color;
       ctx.beginPath();
       ctx.arc(person.position.x, person.position.y, 13, 0, Math.PI * 2);
       ctx.fill();
-
-      ctx.strokeStyle = '#ffffff';
-      ctx.lineWidth = 3;
-      ctx.beginPath();
-      ctx.arc(person.position.x, person.position.y, 13, 0, Math.PI * 2);
-      ctx.stroke();
 
       if (typeof person.directionDegrees === 'number') {
         this.drawArrow(ctx, person.position.x, person.position.y, person.directionDegrees, person.color);
