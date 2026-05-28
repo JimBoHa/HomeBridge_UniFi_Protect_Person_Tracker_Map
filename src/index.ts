@@ -51,7 +51,7 @@ class UniFiProtectPersonTrackerPlatform implements DynamicPlatformPlugin {
       .setCharacteristic(this.api.hap.Characteristic.Model, 'UniFi Protect Person Tracker Map')
       .setCharacteristic(this.api.hap.Characteristic.SerialNumber, 'person-tracker-map');
 
-    const delegate = new MapCameraDelegate(tracker, renderer, snapshotUrl, config.ffmpegPath, this.log);
+    const delegate = new MapCameraDelegate(tracker, renderer, config.ffmpegPath, this.log);
     accessory.configureController(new this.api.hap.CameraController({
       cameraStreamCount: 2,
       delegate,

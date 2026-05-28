@@ -6,7 +6,7 @@ export type ProtectEventSink = (event: ProtectPersonEvent) => void;
 export class UniFiProtectAdapter {
   private cookie = '';
   private timer?: NodeJS.Timeout;
-  private lastEvent = 0;
+  private lastEvent = Date.now() - 60 * 60 * 1000;
   private readonly tlsAgent?: Agent;
 
   public constructor(
@@ -41,11 +41,17 @@ export class UniFiProtectAdapter {
   private async poll(): Promise<void> {
     try {
       await this.ensureLogin();
-      const bootstrap = await this.requestJson('/proxy/protect/api/bootstrap');
-      for (const event of extractPersonEvents(bootstrap, this.lastEvent)) {
+      const end = Date.now();
+      const eventsPayload = await this.requestJson(`/proxy/protect/api/events?start=${this.lastEvent + 1}&end=${end}&limit=250`);
+      const events = extractPersonEvents(eventsPayload, this.lastEvent);
+      if (events.length > 0) {
+        this.logger.info(`UniFi Protect person events found: ${events.length}`);
+      }
+      for (const event of events) {
         this.lastEvent = Math.max(this.lastEvent, event.timestamp);
         this.sink(event);
       }
+      this.lastEvent = Math.max(this.lastEvent, end - 1000);
     } catch (error) {
       this.logger.warn(`UniFi Protect poll failed: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -93,8 +99,9 @@ export class UniFiProtectAdapter {
     if (url.protocol !== 'https:' && url.protocol !== 'http:') {
       throw new Error('Protect host must be HTTP or HTTPS');
     }
-    url.pathname = path;
-    url.search = '';
+    const [pathname, search] = path.split('?', 2);
+    url.pathname = pathname ?? '/';
+    url.search = search ? `?${search}` : '';
     return url.toString();
   }
 }
@@ -111,23 +118,42 @@ export function extractPersonEvents(payload: unknown, afterTimestamp = 0): Prote
     }
 
     const type = String(value.type ?? value.smartDetectType ?? value.detectionType ?? '').toLowerCase();
-    const hasPersonType = type.includes('person') || arrayIncludesPerson(value.smartDetectTypes) || arrayIncludesPerson(value.types);
+    const thumbnails = detectedThumbnails(value.metadata);
+    const personThumbnails = thumbnails.filter((thumbnail) => thumbnail.type === 'person' || thumbnail.type === 'face');
+    const hasPersonType = type.includes('person') || type.includes('face') || arrayIncludesPerson(value.smartDetectTypes) || arrayIncludesPerson(value.types) || personThumbnails.length > 0;
     const personName = stringValue(value.name) ?? stringValue(value.personName) ?? stringValue(value.faceName) ?? stringValue(value.metadata, 'name');
-    const personId = stringValue(value.personId) ?? stringValue(value.faceId) ?? stringValue(value.userId) ?? personName;
     const cameraId = stringValue(value.cameraId) ?? stringValue(value.deviceId) ?? stringValue(value.camera);
     const timestamp = timestampValue(value.timestamp ?? value.start ?? value.createdAt ?? value.end);
 
-    if (!hasPersonType || !personId || !cameraId || !timestamp || timestamp <= afterTimestamp) {
+    if (!hasPersonType || !cameraId || !timestamp || timestamp <= afterTimestamp) {
       return;
     }
 
+    if (personThumbnails.length > 0) {
+      const directionDegrees = routeDirectionDegrees(value.metadata);
+      for (const thumbnail of personThumbnails) {
+        const thumbTimestamp = timestampValue(thumbnail.clockBestWall) ?? timestamp;
+        const personId = personIdFromThumbnail(thumbnail) ?? stringValue(value.personId) ?? stringValue(value.faceId) ?? stringValue(value.userId) ?? personName ?? String(value.id ?? `${cameraId}:${thumbTimestamp}`);
+        events.push({
+          personId,
+          name: personName ?? nameFromThumbnail(thumbnail),
+          cameraId,
+          timestamp: thumbTimestamp,
+          confidence: numberValue(thumbnail.confidence) ?? numberValue(value.confidence ?? value.score),
+          directionDegrees,
+        });
+      }
+      return;
+    }
+
+    const personId = stringValue(value.personId) ?? stringValue(value.faceId) ?? stringValue(value.userId) ?? personName ?? String(value.id ?? `${cameraId}:${timestamp}`);
     events.push({
       personId,
       name: personName,
       cameraId,
       timestamp,
-      confidence: numberValue(value.confidence),
-      directionDegrees: numberValue(value.directionDegrees ?? value.direction),
+      confidence: numberValue(value.confidence ?? value.score),
+      directionDegrees: numberValue(value.directionDegrees ?? value.direction) ?? routeDirectionDegrees(value.metadata),
     });
   });
   return dedupeEvents(events);
@@ -182,6 +208,62 @@ function stringValue(value: unknown, nestedKey?: string): string | undefined {
 
 function numberValue(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+type Thumbnail = {
+  type?: string;
+  objectId?: string;
+  labels?: string[];
+  attributes?: Record<string, unknown>;
+  confidence?: number;
+  clockBestWall?: number;
+};
+
+function detectedThumbnails(value: unknown): Thumbnail[] {
+  if (!isRecord(value) || !Array.isArray(value.detectedThumbnails)) {
+    return [];
+  }
+  return value.detectedThumbnails
+    .filter(isRecord)
+    .map((thumbnail) => ({
+      type: stringValue(thumbnail.type)?.toLowerCase(),
+      objectId: stringValue(thumbnail.objectId),
+      labels: Array.isArray(thumbnail.labels) ? thumbnail.labels.map(String) : undefined,
+      attributes: isRecord(thumbnail.attributes) ? thumbnail.attributes : undefined,
+      confidence: numberValue(thumbnail.confidence),
+      clockBestWall: numberValue(thumbnail.clockBestWall),
+    }));
+}
+
+function personIdFromThumbnail(thumbnail: Thumbnail): string | undefined {
+  const group = thumbnail.labels?.find((label) => label.startsWith('group:'))?.split(':')[1];
+  const trackerId = numberValue(thumbnail.attributes?.trackerId);
+  const associatedFaceTrackerId = numberValue(thumbnail.attributes?.associatedFaceTrackerID);
+  return group ?? (associatedFaceTrackerId ? `face-tracker-${associatedFaceTrackerId}` : undefined) ?? (trackerId ? `tracker-${trackerId}` : undefined) ?? thumbnail.objectId;
+}
+
+function nameFromThumbnail(thumbnail: Thumbnail): string | undefined {
+  const groupType = thumbnail.labels?.find((label) => label.startsWith('groupType:'))?.split(':')[1];
+  if (groupType && groupType !== 'unknown') {
+    return groupType;
+  }
+  return thumbnail.type === 'face' ? 'Face' : 'Person';
+}
+
+function routeDirectionDegrees(metadata: unknown): number | undefined {
+  if (!isRecord(metadata) || !Array.isArray(metadata.detectedAreas)) {
+    return undefined;
+  }
+  for (const area of metadata.detectedAreas) {
+    if (!isRecord(area) || !isRecord(area.routePath) || !Array.isArray(area.routePath.lastDirection)) {
+      continue;
+    }
+    const [x, y] = area.routePath.lastDirection;
+    if (typeof x === 'number' && typeof y === 'number' && Number.isFinite(x) && Number.isFinite(y)) {
+      return ((Math.atan2(y, x) * 180 / Math.PI) % 360 + 360) % 360;
+    }
+  }
+  return undefined;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -56,6 +56,56 @@ describe('extractPersonEvents', () => {
     expect(events[0]?.timestamp).toBe(10_000);
   });
 
+  it('extracts Protect smart detection person thumbnails with direction', () => {
+    const events = extractPersonEvents([{
+      id: 'event-1',
+      type: 'smartDetectZone',
+      smartDetectTypes: ['face', 'person'],
+      camera: 'front',
+      start: 20,
+      score: 80,
+      metadata: {
+        detectedAreas: [{ routePath: { lastDirection: [0, 10] } }],
+        detectedThumbnails: [
+          {
+            type: 'person',
+            objectId: 'object-1',
+            labels: ['smartDetectType:person'],
+            attributes: { trackerId: 123 },
+            confidence: 94,
+            clockBestWall: 21_000_000_000,
+          },
+          {
+            type: 'face',
+            objectId: 'face-1',
+            labels: ['smartDetectType:face', 'group:known-person', 'groupType:unknown'],
+            confidence: 88,
+            clockBestWall: 21_100_000_000,
+          },
+        ],
+      },
+    }]);
+
+    expect(events).toMatchObject([
+      {
+        personId: 'tracker-123',
+        name: 'Person',
+        cameraId: 'front',
+        timestamp: 21_000_000_000,
+        confidence: 94,
+        directionDegrees: 90,
+      },
+      {
+        personId: 'known-person',
+        name: 'Face',
+        cameraId: 'front',
+        timestamp: 21_100_000_000,
+        confidence: 88,
+        directionDegrees: 90,
+      },
+    ]);
+  });
+
   it('logs and skips polling when credentials are absent', () => {
     const warn = vi.fn();
     const adapter = new UniFiProtectAdapter(undefined, () => undefined, { ...logger, warn });
@@ -73,7 +123,7 @@ describe('extractPersonEvents', () => {
         headers: { 'set-cookie': 'TOKEN=abc; Path=/' },
       }))
       .mockResolvedValueOnce(Response.json({
-        events: [{ type: 'person', personId: 'p1', cameraId: 'front', timestamp: 20 }],
+        events: [{ type: 'person', personId: 'p1', cameraId: 'front', timestamp: Date.now() }],
       }));
 
     const adapter = new UniFiProtectAdapter({
@@ -86,7 +136,7 @@ describe('extractPersonEvents', () => {
     await vi.runOnlyPendingTimersAsync();
     await vi.waitFor(() => expect(sunk).toHaveLength(1));
     expect(fetchMock.mock.calls[0]?.[0]).toBe('https://protect.local/api/auth/login');
-    expect(fetchMock.mock.calls[1]?.[0]).toBe('https://protect.local/proxy/protect/api/bootstrap');
+    expect(String(fetchMock.mock.calls[1]?.[0])).toContain('https://protect.local/proxy/protect/api/events?');
     adapter.stop();
     vi.useRealTimers();
   });

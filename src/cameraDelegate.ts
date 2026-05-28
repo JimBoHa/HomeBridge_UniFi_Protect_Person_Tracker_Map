@@ -24,6 +24,7 @@ type SessionInfo = {
   srtpKey: Buffer;
   srtpSalt: Buffer;
   process?: ChildProcessWithoutNullStreams;
+  frameTimer?: NodeJS.Timeout;
 };
 
 export class MapCameraDelegate implements CameraStreamingDelegate {
@@ -32,7 +33,6 @@ export class MapCameraDelegate implements CameraStreamingDelegate {
   public constructor(
     private readonly tracker: PersonTracker,
     private readonly renderer: MapRenderer,
-    private readonly snapshotUrl: string,
     private readonly ffmpegPath: string,
     private readonly logger: Logger,
   ) {}
@@ -86,19 +86,27 @@ export class MapCameraDelegate implements CameraStreamingDelegate {
 
     const cryptoSuite = SRTPCryptoSuites.AES_CM_128_HMAC_SHA1_80;
     const srtpParams = Buffer.concat([session.srtpKey, session.srtpSalt]).toString('base64');
+    const fps = request.video.fps || 10;
+    const width = request.video.width || 1280;
+    const height = request.video.height || 720;
     const args = [
       '-hide_banner',
       '-loglevel', 'error',
-      '-re',
-      '-loop', '1',
-      '-i', this.snapshotUrl,
+      '-f', 'mjpeg',
+      '-r', String(fps),
+      '-i', 'pipe:0',
       '-an',
       '-vcodec', 'libx264',
       '-pix_fmt', 'yuv420p',
       '-profile:v', 'baseline',
       '-level', '3.1',
-      '-r', String(request.video.fps || 10),
+      '-preset', 'ultrafast',
+      '-tune', 'zerolatency',
+      '-bf', '0',
+      '-r', String(fps),
       '-b:v', `${Math.max(128, request.video.max_bit_rate || 300)}k`,
+      '-maxrate', `${Math.max(128, request.video.max_bit_rate || 300)}k`,
+      '-bufsize', `${Math.max(256, (request.video.max_bit_rate || 300) * 2)}k`,
       '-payload_type', String(request.video.pt),
       '-ssrc', String(session.videoSsrc),
       '-f', 'rtp',
@@ -108,18 +116,37 @@ export class MapCameraDelegate implements CameraStreamingDelegate {
     ];
 
     session.process = spawn(this.ffmpegPath, args);
+    session.process.stdin.on('error', (error) => this.logger.debug(`ffmpeg stdin: ${error.message}`));
     session.process.stderr.on('data', (data: Buffer) => this.logger.debug(`ffmpeg: ${data.toString('utf8').trim()}`));
     session.process.on('exit', (code) => {
+      if (session.frameTimer) {
+        clearInterval(session.frameTimer);
+        session.frameTimer = undefined;
+      }
       if (code && code !== 0) {
         this.logger.warn(`ffmpeg exited with code ${code}`);
       }
     });
+    const writeFrame = (): void => {
+      void this.renderer.renderJpeg(this.tracker.snapshot(), width, height)
+        .then((buffer) => {
+          if (session.process?.stdin.writable) {
+            session.process.stdin.write(buffer);
+          }
+        })
+        .catch((error: unknown) => this.logger.warn(`stream frame render failed: ${error instanceof Error ? error.message : String(error)}`));
+    };
+    writeFrame();
+    session.frameTimer = setInterval(writeFrame, Math.max(250, Math.floor(1000 / fps)));
     callback();
   }
 
   private stopStream(request: StopStreamRequest, callback: StreamRequestCallback): void {
     const session = this.sessions.get(request.sessionID);
     if (session?.process) {
+      if (session.frameTimer) {
+        clearInterval(session.frameTimer);
+      }
       session.process.kill('SIGTERM');
     }
     this.sessions.delete(request.sessionID);
