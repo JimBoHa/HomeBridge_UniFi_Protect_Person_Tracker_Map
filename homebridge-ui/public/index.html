@@ -264,15 +264,31 @@
     return { x: camera.position.x + Math.cos(radians) * 52, y: camera.position.y + Math.sin(radians) * 52 };
   }
 
+  function nextCameraPosition(indexOffset = 0) {
+    const spacing = 34;
+    const columns = Math.max(1, Math.floor((state.map.width - 80) / spacing));
+    const index = state.map.cameras.filter((camera) => camera.position).length + indexOffset;
+    return {
+      x: clamp(Math.round(state.map.width / 2) + ((index % columns) - Math.floor(columns / 2)) * spacing, 24, state.map.width - 24),
+      y: clamp(Math.round(state.map.height / 2) + Math.floor(index / columns) * spacing, 24, state.map.height - 24),
+    };
+  }
+
+  function placeCamera(camera, indexOffset = 0) {
+    camera.position = camera.position ?? nextCameraPosition(indexOffset);
+    camera.headingDegrees ??= 0;
+    state.selectedId = camera.id;
+  }
+
   function renderCameraRows() {
     fields.cameraList.textContent = '';
-    fields.selectedLabel.textContent = state.selectedId ? 'Drag dot to move. Drag arrow tip to face direction.' : 'Drag discovered cameras onto map.';
+    fields.selectedLabel.textContent = state.selectedId ? 'Drag dot to move. Drag arrow tip to face direction.' : 'Select a camera to place it on the map.';
     for (const camera of state.map.cameras) {
       const row = document.createElement('div');
       row.className = `camera-row${camera.id === state.selectedId ? ' selected' : ''}${camera.position ? '' : ' unplaced'}`;
       row.draggable = true;
       row.addEventListener('dragstart', (event) => event.dataTransfer.setData('text/plain', camera.id));
-      row.addEventListener('click', () => { state.selectedId = camera.id; renderCameraRows(); draw(); });
+      row.addEventListener('click', () => { placeCamera(camera); markDirty(); renderCameraRows(); draw(); });
 
       const group = document.createElement('div');
       group.className = 'camera-row-fields';
@@ -301,7 +317,7 @@
 
       const actions = document.createElement('div');
       actions.className = 'tool-row';
-      actions.append(button('Select', 'btn-secondary', () => { state.selectedId = camera.id; renderCameraRows(); draw(); }));
+      actions.append(button(camera.position ? 'Select' : 'Place', 'btn-secondary', () => { placeCamera(camera); markDirty(); renderCameraRows(); draw(); }));
       actions.append(button('Remove', 'btn-danger', () => {
         state.map.cameras = state.map.cameras.filter((item) => item !== camera);
         if (state.selectedId === camera.id) state.selectedId = state.map.cameras[0]?.id ?? null;
@@ -414,15 +430,24 @@
 
   function upsertDiscovered(cameras) {
     let added = 0;
+    let indexOffset = 0;
     for (const camera of cameras) {
       if (!state.map.cameras.some((item) => item.id === camera.id)) {
-        state.map.cameras.push({ id: camera.id, name: camera.name, position: undefined, headingDegrees: 0 });
+        const placement = {
+          id: camera.id,
+          name: camera.name,
+          position: nextCameraPosition(indexOffset),
+          headingDegrees: 0,
+        };
+        state.map.cameras.push(placement);
+        state.selectedId = placement.id;
         added += 1;
+        indexOffset += 1;
       }
     }
     renderCameraRows();
     draw();
-    markDirty(`Discovered ${cameras.length} cameras. Added ${added}. Drag cameras onto map, then Save.`);
+    markDirty(`Discovered ${cameras.length} cameras. Added ${added}. Drag camera dots to exact positions, then use Homebridge Save.`);
   }
 
   fields.file.addEventListener('change', async () => {
@@ -492,7 +517,7 @@
     state.map.cameras.push({
       id,
       name: `Camera ${state.map.cameras.length + 1}`,
-      position: { x: Math.round(state.map.width / 2), y: Math.round(state.map.height / 2) },
+      position: nextCameraPosition(),
       headingDegrees: 0,
     });
     state.selectedId = id;
