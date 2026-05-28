@@ -136,7 +136,11 @@ describe('extractPersonEvents', () => {
     await vi.runOnlyPendingTimersAsync();
     await vi.waitFor(() => expect(sunk).toHaveLength(1));
     expect(fetchMock.mock.calls[0]?.[0]).toBe('https://protect.local/api/auth/login');
-    expect(String(fetchMock.mock.calls[1]?.[0])).toContain('https://protect.local/proxy/protect/api/events?');
+    const pollUrl = new URL(String(fetchMock.mock.calls[1]?.[0]));
+    expect(`${pollUrl.origin}${pollUrl.pathname}`).toBe('https://protect.local/proxy/protect/api/events');
+    expect(pollUrl.searchParams.get('type')).toBe('smartDetectZone');
+    expect(pollUrl.searchParams.get('smartDetectTypes')).toBe('person');
+    expect(pollUrl.searchParams.get('limit')).toBe('1000');
     adapter.stop();
     vi.useRealTimers();
   });

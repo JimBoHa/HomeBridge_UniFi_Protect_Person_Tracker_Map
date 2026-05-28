@@ -6,7 +6,7 @@ export type ProtectEventSink = (event: ProtectPersonEvent) => void;
 export class UniFiProtectAdapter {
   private cookie = '';
   private timer?: NodeJS.Timeout;
-  private lastEvent = Date.now() - 60 * 60 * 1000;
+  private lastEvent: number;
   private readonly tlsAgent?: Agent;
 
   public constructor(
@@ -14,8 +14,10 @@ export class UniFiProtectAdapter {
     private readonly sink: ProtectEventSink,
     private readonly logger: Logger,
     private readonly fetchImpl: typeof fetch = fetch,
+    initialLookbackMs = 7 * 24 * 60 * 60 * 1000,
   ) {
     this.tlsAgent = config?.ignoreTls ? new Agent({ connect: { rejectUnauthorized: false } }) : undefined;
+    this.lastEvent = Date.now() - Math.max(10_000, initialLookbackMs);
   }
 
   public start(): void {
@@ -42,7 +44,14 @@ export class UniFiProtectAdapter {
     try {
       await this.ensureLogin();
       const end = Date.now();
-      const eventsPayload = await this.requestJson(`/proxy/protect/api/events?start=${this.lastEvent + 1}&end=${end}&limit=250`);
+      const query = new URLSearchParams({
+        start: String(this.lastEvent + 1),
+        end: String(end),
+        limit: '1000',
+        type: 'smartDetectZone',
+        smartDetectTypes: 'person',
+      });
+      const eventsPayload = await this.requestJson(`/proxy/protect/api/events?${query.toString()}`);
       const events = extractPersonEvents(eventsPayload, this.lastEvent);
       if (events.length > 0) {
         this.logger.info(`UniFi Protect person events found: ${events.length}`);
