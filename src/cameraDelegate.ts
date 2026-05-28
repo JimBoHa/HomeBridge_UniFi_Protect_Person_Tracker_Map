@@ -44,7 +44,6 @@ export class MapCameraDelegate implements CameraStreamingDelegate {
   public handleSnapshotRequest(request: SnapshotRequest, callback: SnapshotRequestCallback): void {
     void this.renderer.renderJpeg(this.tracker.snapshot(), request.width, request.height)
       .then((buffer) => {
-        this.setCachedFrame(request.width, request.height, buffer);
         callback(undefined, buffer);
       })
       .catch((error: unknown) => callback(error instanceof Error ? error : new Error(String(error))));
@@ -101,7 +100,9 @@ export class MapCameraDelegate implements CameraStreamingDelegate {
     const args = [
       '-hide_banner',
       '-loglevel', 'warning',
-      '-f', 'mjpeg',
+      '-f', 'rawvideo',
+      '-pix_fmt', 'rgba',
+      '-s', `${width}x${height}`,
       '-r', String(fps),
       '-i', 'pipe:0',
       '-an',
@@ -146,7 +147,7 @@ export class MapCameraDelegate implements CameraStreamingDelegate {
         return;
       }
 
-      session.frameRender = this.renderer.renderJpeg(this.tracker.snapshot(), width, height)
+      session.frameRender = this.renderer.renderRawRgba(this.tracker.snapshot(), width, height)
         .then((buffer) => {
           session.cachedFrame = buffer;
           session.frameRenderedAt = Date.now();

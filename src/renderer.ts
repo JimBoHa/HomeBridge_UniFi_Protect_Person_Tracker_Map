@@ -12,6 +12,10 @@ export type MapImageSource = {
   dataUrl?: string;
 };
 
+type BitmapWithData = Bitmap & {
+  data: Uint8Array;
+};
+
 export class MapRenderer {
   private background?: Promise<Bitmap>;
   private readonly mapImagePath?: string;
@@ -35,14 +39,24 @@ export class MapRenderer {
     return this.render(scaleSnapshot(snapshot, width, height), 'jpeg');
   }
 
+  public async renderRawRgba(snapshot: TrackerSnapshot, width: number, height: number): Promise<Buffer> {
+    const image = await this.renderBitmap(scaleSnapshot(snapshot, width, height));
+    return Buffer.from((image as BitmapWithData).data);
+  }
+
   private async render(snapshot: TrackerSnapshot, format: 'png' | 'jpeg'): Promise<Buffer> {
+    const image = await this.renderBitmap(snapshot);
+    return format === 'png' ? encodePng(image) : encodeJpeg(image);
+  }
+
+  private async renderBitmap(snapshot: TrackerSnapshot): Promise<Bitmap> {
     const image = make(snapshot.map.width, snapshot.map.height);
     const ctx = image.getContext('2d');
     await this.drawBackground(ctx, snapshot);
     this.drawCameras(ctx, snapshot);
     this.drawPeople(ctx, snapshot);
     this.drawFooter(ctx, snapshot);
-    return format === 'png' ? encodePng(image) : encodeJpeg(image);
+    return image;
   }
 
   private async drawBackground(ctx: CanvasContext, snapshot: TrackerSnapshot): Promise<void> {
