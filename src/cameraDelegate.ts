@@ -89,7 +89,7 @@ export class MapCameraDelegate implements CameraStreamingDelegate {
 
     const cryptoSuite = SRTPCryptoSuites.AES_CM_128_HMAC_SHA1_80;
     const srtpParams = Buffer.concat([session.srtpKey, session.srtpSalt]).toString('base64');
-    const fps = request.video.fps || 10;
+    const fps = Math.min(Math.max(1, request.video.fps || 10), 10);
     const width = request.video.width || 1280;
     const height = request.video.height || 720;
     const args = [
@@ -115,7 +115,7 @@ export class MapCameraDelegate implements CameraStreamingDelegate {
       '-f', 'rtp',
       '-srtp_out_suite', cryptoSuite === SRTPCryptoSuites.AES_CM_128_HMAC_SHA1_80 ? 'AES_CM_128_HMAC_SHA1_80' : 'NONE',
       '-srtp_out_params', srtpParams,
-      `srtp://${session.address}:${session.videoPort}?rtcpport=${session.videoPort}&pkt_size=${request.video.mtu}`,
+      `srtp://${session.address}:${session.videoPort}?rtcpport=${session.videoPort}&localrtpport=${session.localVideoPort}&localrtcpport=${session.localVideoPort}&pkt_size=${request.video.mtu}`,
     ];
 
     this.logger.info(`Starting map stream ${width}x${height}@${fps}fps to ${session.address}:${session.videoPort} from ${session.localVideoPort}`);
