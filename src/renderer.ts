@@ -1,5 +1,6 @@
-import { createReadStream } from 'node:fs';
+import { createReadStream, existsSync } from 'node:fs';
 import { access } from 'node:fs/promises';
+import { createRequire } from 'node:module';
 import { extname } from 'node:path';
 import { Readable, Writable } from 'node:stream';
 import { decodeJPEGFromStream, decodePNGFromStream, encodeJPEGToStream, encodePNGToStream, make, type Bitmap, type CanvasContext } from 'pureimage';
@@ -17,6 +18,7 @@ export class MapRenderer {
   private readonly mapImageDataUrl?: string;
 
   public constructor(mapImage?: string | MapImageSource) {
+    ensureFont();
     if (typeof mapImage === 'string') {
       this.mapImagePath = mapImage;
     } else {
@@ -58,7 +60,7 @@ export class MapRenderer {
     } catch {
       this.drawGrid(ctx, snapshot.map.width, snapshot.map.height);
       ctx.fillStyle = '#5f0f40';
-      ctx.font = '20px sans-serif';
+      ctx.font = `20px ${FONT_FAMILY}`;
       ctx.fillText('Map image unavailable', 24, 34);
     }
   }
@@ -87,7 +89,7 @@ export class MapRenderer {
       ctx.arc(camera.position.x, camera.position.y, 8, 0, Math.PI * 2);
       ctx.fill();
       ctx.fillStyle = '#1d3557';
-      ctx.font = '14px sans-serif';
+      ctx.font = `14px ${FONT_FAMILY}`;
       ctx.fillText(camera.name, camera.position.x + 12, camera.position.y - 6);
     }
   }
@@ -109,7 +111,7 @@ export class MapRenderer {
       }
 
       ctx.fillStyle = '#111111';
-      ctx.font = '16px sans-serif';
+      ctx.font = `16px ${FONT_FAMILY}`;
       ctx.fillText(`${person.name} ${new Date(person.timestamp).toLocaleTimeString('en-US', { hour12: false })}`, person.position.x + 18, person.position.y + 5);
     }
   }
@@ -138,7 +140,7 @@ export class MapRenderer {
     ctx.fillStyle = 'rgba(255, 255, 255, 0.82)';
     ctx.fillRect(0, snapshot.map.height - 34, snapshot.map.width, 34);
     ctx.fillStyle = '#242423';
-    ctx.font = '14px sans-serif';
+    ctx.font = `14px ${FONT_FAMILY}`;
     ctx.fillText(`Updated ${new Date(snapshot.generatedAt).toISOString()} | People: ${snapshot.people.length}`, 16, snapshot.map.height - 12);
   }
 
@@ -150,6 +152,37 @@ export class MapRenderer {
       ? loadBitmapFromDataUrl(this.mapImageDataUrl)
       : loadBitmap(requireAbsoluteSafePath(this.mapImagePath ?? '', 'mapImagePath'));
     return this.background;
+  }
+}
+
+const FONT_FAMILY = 'TrackerSans';
+let fontLoaded = false;
+const require = createRequire(import.meta.url);
+const { registerFont } = require('pureimage') as {
+  registerFont: (fontPath: string, family: string) => { loadSync: () => void };
+};
+
+function ensureFont(): void {
+  if (fontLoaded) {
+    return;
+  }
+
+  const fontPath = [
+    '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
+    '/usr/share/fonts/truetype/freefont/FreeSans.ttf',
+    '/System/Library/Fonts/Supplemental/Arial.ttf',
+    '/Library/Fonts/Arial.ttf',
+  ].find((path) => existsSync(path));
+
+  if (!fontPath) {
+    return;
+  }
+
+  try {
+    registerFont(fontPath, FONT_FAMILY).loadSync();
+    fontLoaded = true;
+  } catch {
+    fontLoaded = false;
   }
 }
 
