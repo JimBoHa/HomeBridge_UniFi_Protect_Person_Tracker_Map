@@ -109,19 +109,21 @@ export class MapRenderer {
   }
 
   private drawPeople(ctx: CanvasContext, snapshot: TrackerSnapshot): void {
+    const dotRadius = pixelsForFeet(snapshot, 1.5) ?? 13;
+    const dotOutlineRadius = dotRadius + Math.max(2, dotRadius * 0.18);
     for (const person of snapshot.people) {
       ctx.fillStyle = '#ffffff';
       ctx.beginPath();
-      ctx.arc(person.position.x, person.position.y, 16, 0, Math.PI * 2);
+      ctx.arc(person.position.x, person.position.y, dotOutlineRadius, 0, Math.PI * 2);
       ctx.fill();
 
       ctx.fillStyle = person.color;
       ctx.beginPath();
-      ctx.arc(person.position.x, person.position.y, 13, 0, Math.PI * 2);
+      ctx.arc(person.position.x, person.position.y, dotRadius, 0, Math.PI * 2);
       ctx.fill();
 
       if (typeof person.directionDegrees === 'number') {
-        this.drawArrow(ctx, person.position.x, person.position.y, person.directionDegrees, person.color);
+        this.drawArrow(ctx, person.position.x, person.position.y, person.directionDegrees, person.color, snapshot, dotOutlineRadius);
       }
 
       ctx.fillStyle = '#111111';
@@ -130,21 +132,27 @@ export class MapRenderer {
     }
   }
 
-  private drawArrow(ctx: CanvasContext, x: number, y: number, degrees: number, color: string): void {
+  private drawArrow(ctx: CanvasContext, x: number, y: number, degrees: number, color: string, snapshot: TrackerSnapshot, offset: number): void {
+    const length = pixelsForFeet(snapshot, 10) ?? 46;
+    const lineWidth = Math.max(3, Math.min(10, length * 0.12));
+    const headLength = Math.max(8, Math.min(18, length * 0.28));
+    const headWidth = Math.max(6, Math.min(14, length * 0.22));
+    const start = offset + 2;
+    const end = start + length;
     ctx.save();
     ctx.translate(x, y);
     ctx.rotate(degrees * Math.PI / 180);
     ctx.strokeStyle = color;
     ctx.fillStyle = color;
-    ctx.lineWidth = 5;
+    ctx.lineWidth = lineWidth;
     ctx.beginPath();
-    ctx.moveTo(18, 0);
-    ctx.lineTo(58, 0);
+    ctx.moveTo(start, 0);
+    ctx.lineTo(end, 0);
     ctx.stroke();
     ctx.beginPath();
-    ctx.moveTo(64, 0);
-    ctx.lineTo(48, -10);
-    ctx.lineTo(48, 10);
+    ctx.moveTo(end + headLength, 0);
+    ctx.lineTo(end, -headWidth);
+    ctx.lineTo(end, headWidth);
     ctx.closePath();
     ctx.fill();
     ctx.restore();
@@ -247,11 +255,16 @@ async function encode(bitmap: Bitmap, encoder: (stream: Writable) => Promise<voi
 function scaleSnapshot(snapshot: TrackerSnapshot, width: number, height: number): TrackerSnapshot {
   const xScale = width / snapshot.map.width;
   const yScale = height / snapshot.map.height;
+  const scaleFactor = (xScale + yScale) / 2;
   return {
     generatedAt: snapshot.generatedAt,
     map: {
       width,
       height,
+      scale: snapshot.map.scale ? {
+        ...snapshot.map.scale,
+        pixels: snapshot.map.scale.pixels * scaleFactor,
+      } : undefined,
       cameras: snapshot.map.cameras.map((camera) => ({
         ...camera,
         position: {
@@ -268,4 +281,13 @@ function scaleSnapshot(snapshot: TrackerSnapshot, width: number, height: number)
       },
     })),
   };
+}
+
+function pixelsForFeet(snapshot: TrackerSnapshot, feet: number): number | undefined {
+  if (!snapshot.map.scale) {
+    return undefined;
+  }
+
+  const distance = snapshot.map.scale.unit === 'ft' ? feet : feet * 0.3048;
+  return distance * (snapshot.map.scale.pixels / snapshot.map.scale.distance);
 }

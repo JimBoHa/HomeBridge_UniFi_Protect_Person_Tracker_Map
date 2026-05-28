@@ -1,10 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { normalizeDegrees, PersonTracker } from './tracker.js';
+import { normalizeDegrees, PersonTracker, signedAngleDelta } from './tracker.js';
 import type { MapConfig } from './types.js';
 
 const map: MapConfig = {
   width: 500,
   height: 300,
+  scale: { pixels: 10, distance: 1, unit: 'ft' },
   cameras: [
     { id: 'front', name: 'Front', position: { x: 100, y: 50 }, headingDegrees: 90 },
     { id: 'hall', name: 'Hall', position: { x: 250, y: 150 } },
@@ -22,9 +23,10 @@ describe('PersonTracker', () => {
     expect(snapshot.people[0]).toMatchObject({
       personId: 'p1',
       name: 'Ada',
-      position: { x: 250, y: 150 },
       sourceCameraId: 'hall',
     });
+    expect(snapshot.people[0]?.position.x).toBeCloseTo(350, 1);
+    expect(snapshot.people[0]?.position.y).toBeCloseTo(150, 1);
   });
 
   it('derives direction from path and clamps map bounds', () => {
@@ -36,8 +38,23 @@ describe('PersonTracker', () => {
       path: [{ x: 50, y: 50 }, { x: 700, y: -20 }],
     });
 
-    expect(person.position).toEqual({ x: 500, y: 0 });
-    expect(person.directionDegrees).toBeCloseTo(353.85, 1);
+    expect(person.position.x).toBeCloseTo(500, 1);
+    expect(person.position.y).toBeCloseTo(300, 1);
+    expect(person.directionDegrees).toBe(45);
+  });
+
+  it('projects detections into the camera field of view when no path is available', () => {
+    const tracker = new PersonTracker(map, 60_000, () => 1_000);
+    const person = tracker.ingest({
+      personId: 'p3',
+      cameraId: 'front',
+      timestamp: 1_000,
+      directionDegrees: 200,
+    });
+
+    expect(person.position.x).toBeCloseTo(29.29, 1);
+    expect(person.position.y).toBeCloseTo(120.71, 1);
+    expect(person.directionDegrees).toBe(135);
   });
 
   it('expires stale people', () => {
@@ -58,5 +75,7 @@ describe('normalizeDegrees', () => {
   it('normalizes negative and overflowing values', () => {
     expect(normalizeDegrees(-90)).toBe(270);
     expect(normalizeDegrees(450)).toBe(90);
+    expect(signedAngleDelta(350, 10)).toBe(20);
+    expect(signedAngleDelta(10, 350)).toBe(-20);
   });
 });

@@ -13,6 +13,9 @@ const palette = [
   '#1982c4',
 ];
 
+const DEFAULT_CAMERA_PROJECTION_FEET = 10;
+const FOV_WIDTH_DEGREES = 90;
+
 export class PersonTracker {
   private readonly people = new Map<string, PersonPosition>();
   private readonly colors = new Map<string, string>();
@@ -30,8 +33,10 @@ export class PersonTracker {
   public ingest(event: ProtectPersonEvent): PersonPosition {
     const camera = this.findCamera(event.cameraId);
     const previous = this.people.get(event.personId);
-    const position = event.path?.at(-1) ?? camera.position;
-    const directionDegrees = event.directionDegrees ?? this.deriveDirection(event.path, camera, previous);
+    const directionDegrees = this.clampToCameraFov(event.directionDegrees ?? this.deriveDirection(event.path, camera, previous), camera);
+    const position = event.path?.at(-1)
+      ? this.projectPointIntoCameraFov(camera, event.path.at(-1) as { x: number; y: number })
+      : this.projectIntoCameraFov(camera, directionDegrees);
     const person: PersonPosition = {
       personId: event.personId,
       name: event.name?.trim() || previous?.name || event.personId,
@@ -79,6 +84,53 @@ export class PersonTracker {
     return camera.headingDegrees;
   }
 
+  private projectIntoCameraFov(camera: CameraPlacement, directionDegrees: number | undefined): { x: number; y: number } {
+    const headingDegrees = camera.headingDegrees ?? directionDegrees ?? 0;
+    const bearing = this.clampToCameraFov(directionDegrees ?? headingDegrees, camera) ?? headingDegrees;
+    const distance = this.pixelsForFeet(DEFAULT_CAMERA_PROJECTION_FEET);
+    const radians = bearing * Math.PI / 180;
+    return this.clamp({
+      x: camera.position.x + Math.cos(radians) * distance,
+      y: camera.position.y + Math.sin(radians) * distance,
+    });
+  }
+
+  private projectPointIntoCameraFov(camera: CameraPlacement, point: { x: number; y: number }): { x: number; y: number } {
+    if (typeof camera.headingDegrees !== 'number') {
+      return this.clamp(point);
+    }
+
+    const xDelta = point.x - camera.position.x;
+    const yDelta = point.y - camera.position.y;
+    const distance = Math.hypot(xDelta, yDelta) || this.pixelsForFeet(DEFAULT_CAMERA_PROJECTION_FEET);
+    const bearing = normalizeDegrees(Math.atan2(yDelta, xDelta) * 180 / Math.PI);
+    const clampedBearing = this.clampToCameraFov(bearing, camera) ?? bearing;
+    const radians = clampedBearing * Math.PI / 180;
+    return this.clamp({
+      x: camera.position.x + Math.cos(radians) * distance,
+      y: camera.position.y + Math.sin(radians) * distance,
+    });
+  }
+
+  private clampToCameraFov(directionDegrees: number | undefined, camera: CameraPlacement): number | undefined {
+    if (typeof directionDegrees !== 'number' || typeof camera.headingDegrees !== 'number') {
+      return directionDegrees;
+    }
+
+    const halfFov = FOV_WIDTH_DEGREES / 2;
+    const delta = signedAngleDelta(camera.headingDegrees, directionDegrees);
+    return normalizeDegrees(camera.headingDegrees + Math.max(-halfFov, Math.min(halfFov, delta)));
+  }
+
+  private pixelsForFeet(feet: number): number {
+    if (!this.map.scale) {
+      return feet * 10;
+    }
+
+    const distance = this.map.scale.unit === 'ft' ? feet : feet * 0.3048;
+    return distance * (this.map.scale.pixels / this.map.scale.distance);
+  }
+
   private colorFor(personId: string): string {
     const existing = this.colors.get(personId);
     if (existing) {
@@ -109,4 +161,9 @@ export class PersonTracker {
 
 export function normalizeDegrees(value: number): number {
   return ((value % 360) + 360) % 360;
+}
+
+export function signedAngleDelta(fromDegrees: number, toDegrees: number): number {
+  const delta = normalizeDegrees(toDegrees) - normalizeDegrees(fromDegrees);
+  return delta > 180 ? delta - 360 : delta < -180 ? delta + 360 : delta;
 }
