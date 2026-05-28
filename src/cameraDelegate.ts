@@ -128,15 +128,17 @@ export class MapCameraDelegate implements CameraStreamingDelegate {
     session.process = spawn(this.ffmpegPath, args);
     session.process.stdin.on('error', (error) => this.logger.debug(`ffmpeg stdin: ${error.message}`));
     session.process.stderr.on('data', (data: Buffer) => this.logger.warn(`ffmpeg: ${data.toString('utf8').trim()}`));
-    session.process.on('exit', (code) => {
+    session.process.on('exit', (code, signal) => {
       if (session.frameTimer) {
         clearInterval(session.frameTimer);
         session.frameTimer = undefined;
       }
       if (code && code !== 0) {
         this.logger.warn(`ffmpeg exited with code ${code}`);
+      } else if (signal) {
+        this.logger.info(`Map stream stopped by signal ${signal}`);
       } else {
-        this.logger.info('Map stream stopped');
+        this.logger.info('Map stream exited');
       }
     });
     const refreshFrame = (): void => {
@@ -170,6 +172,7 @@ export class MapCameraDelegate implements CameraStreamingDelegate {
 
   private stopStream(request: StopStreamRequest, callback: StreamRequestCallback): void {
     const session = this.sessions.get(request.sessionID);
+    this.logger.info(`Stopping map stream for session ${request.sessionID}`);
     if (session?.process) {
       if (session.frameTimer) {
         clearInterval(session.frameTimer);
