@@ -32,6 +32,7 @@ type SessionInfo = {
 
 export class MapCameraDelegate implements CameraStreamingDelegate {
   private readonly sessions = new Map<string, SessionInfo>();
+  private readonly frameCache = new Map<string, { buffer: Buffer; timestamp: number }>();
 
   public constructor(
     private readonly tracker: PersonTracker,
@@ -42,7 +43,10 @@ export class MapCameraDelegate implements CameraStreamingDelegate {
 
   public handleSnapshotRequest(request: SnapshotRequest, callback: SnapshotRequestCallback): void {
     void this.renderer.renderJpeg(this.tracker.snapshot(), request.width, request.height)
-      .then((buffer) => callback(undefined, buffer))
+      .then((buffer) => {
+        this.setCachedFrame(request.width, request.height, buffer);
+        callback(undefined, buffer);
+      })
       .catch((error: unknown) => callback(error instanceof Error ? error : new Error(String(error))));
   }
 
@@ -92,6 +96,8 @@ export class MapCameraDelegate implements CameraStreamingDelegate {
     const fps = Math.min(Math.max(1, request.video.fps || 10), 10);
     const width = request.video.width || 1280;
     const height = request.video.height || 720;
+    session.cachedFrame = this.getCachedFrame(width, height);
+    session.frameRenderedAt = session.cachedFrame ? Date.now() : undefined;
     const args = [
       '-hide_banner',
       '-loglevel', 'warning',
@@ -142,6 +148,7 @@ export class MapCameraDelegate implements CameraStreamingDelegate {
         .then((buffer) => {
           session.cachedFrame = buffer;
           session.frameRenderedAt = Date.now();
+          this.setCachedFrame(width, height, buffer);
         })
         .catch((error: unknown) => this.logger.warn(`stream frame render failed: ${error instanceof Error ? error.message : String(error)}`))
         .finally(() => {
@@ -172,6 +179,18 @@ export class MapCameraDelegate implements CameraStreamingDelegate {
     this.sessions.delete(request.sessionID);
     callback();
   }
+
+  private setCachedFrame(width: number, height: number, buffer: Buffer): void {
+    this.frameCache.set(frameCacheKey(width, height), { buffer, timestamp: Date.now() });
+  }
+
+  private getCachedFrame(width: number, height: number): Buffer | undefined {
+    const cached = this.frameCache.get(frameCacheKey(width, height));
+    if (!cached || Date.now() - cached.timestamp > 30_000) {
+      return undefined;
+    }
+    return cached.buffer;
+  }
 }
 
 async function allocateUdpPort(): Promise<number> {
@@ -188,4 +207,8 @@ async function allocateUdpPort(): Promise<number> {
 
 function randomSsrc(): number {
   return Math.floor(Math.random() * 0xffffffff);
+}
+
+function frameCacheKey(width: number, height: number): string {
+  return `${width}x${height}`;
 }
