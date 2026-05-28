@@ -1,5 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createSocket } from 'node:dgram';
+import { existsSync } from 'node:fs';
 import type {
   CameraStreamingDelegate,
   PrepareStreamCallback,
@@ -37,9 +38,13 @@ export class MapCameraDelegate implements CameraStreamingDelegate {
   public constructor(
     private readonly tracker: PersonTracker,
     private readonly renderer: MapRenderer,
-    private readonly ffmpegPath: string,
+    ffmpegPath: string,
     private readonly logger: Logger,
-  ) {}
+  ) {
+    this.ffmpegPath = resolveFfmpegPath(ffmpegPath);
+  }
+
+  private readonly ffmpegPath: string;
 
   public handleSnapshotRequest(request: SnapshotRequest, callback: SnapshotRequestCallback): void {
     void this.renderer.renderJpeg(this.tracker.snapshot(), request.width, request.height)
@@ -215,4 +220,16 @@ function randomSsrc(): number {
 
 function frameCacheKey(width: number, height: number): string {
   return `${width}x${height}`;
+}
+
+function resolveFfmpegPath(ffmpegPath: string): string {
+  if (ffmpegPath !== 'ffmpeg') {
+    return ffmpegPath;
+  }
+
+  const bundledPaths = [
+    '/var/lib/homebridge/node_modules/homebridge-unifi-protect/node_modules/ffmpeg-for-homebridge/ffmpeg',
+    '/var/lib/homebridge/node_modules/ffmpeg-for-homebridge/ffmpeg',
+  ];
+  return bundledPaths.find((path) => existsSync(path)) ?? ffmpegPath;
 }
