@@ -147,6 +147,7 @@ export class PersonTracker {
     for (const [personId, person] of this.people.entries()) {
       if (person.timestamp < cutoff) {
         this.people.delete(personId);
+        this.colors.delete(personId);
       }
     }
   }
