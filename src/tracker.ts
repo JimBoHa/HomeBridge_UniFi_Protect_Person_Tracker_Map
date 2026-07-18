@@ -117,7 +117,11 @@ export class PersonTracker {
       return directionDegrees;
     }
 
-    const halfFov = FOV_WIDTH_DEGREES / 2;
+    const fov = camera.fovDegrees ?? FOV_WIDTH_DEGREES;
+    if (fov >= 360) {
+      return normalizeDegrees(directionDegrees);
+    }
+    const halfFov = fov / 2;
     const delta = signedAngleDelta(camera.headingDegrees, directionDegrees);
     return normalizeDegrees(camera.headingDegrees + Math.max(-halfFov, Math.min(halfFov, delta)));
   }

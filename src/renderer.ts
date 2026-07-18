@@ -5,7 +5,7 @@ import { extname } from 'node:path';
 import { Readable, Writable } from 'node:stream';
 import { decodeJPEGFromStream, decodePNGFromStream, encodeJPEGToStream, encodePNGToStream, make, type Bitmap, type CanvasContext } from 'pureimage';
 import { requireAbsoluteSafePath } from './config.js';
-import type { TrackerSnapshot } from './types.js';
+import type { CameraPlacement, TrackerSnapshot } from './types.js';
 
 export type MapImageSource = {
   path?: string;
@@ -98,6 +98,7 @@ export class MapRenderer {
 
   private drawCameras(ctx: CanvasContext, snapshot: TrackerSnapshot): void {
     for (const camera of snapshot.map.cameras) {
+      this.drawFovWedge(ctx, camera, snapshot);
       ctx.fillStyle = '#1d3557';
       ctx.beginPath();
       ctx.arc(camera.position.x, camera.position.y, 8, 0, Math.PI * 2);
@@ -106,6 +107,26 @@ export class MapRenderer {
       ctx.font = `14px ${FONT_FAMILY}`;
       ctx.fillText(camera.name, camera.position.x + 12, camera.position.y - 6);
     }
+  }
+
+  private drawFovWedge(ctx: CanvasContext, camera: CameraPlacement, snapshot: TrackerSnapshot): void {
+    if (typeof camera.headingDegrees !== 'number') {
+      return;
+    }
+
+    const fov = Math.min(360, camera.fovDegrees ?? 90);
+    const radius = pixelsForFeet(snapshot, 15) ?? 60;
+    const startDegrees = camera.headingDegrees - fov / 2;
+    const stepCount = Math.max(8, Math.ceil(fov / 5));
+    ctx.fillStyle = 'rgba(29, 53, 87, 0.12)';
+    ctx.beginPath();
+    ctx.moveTo(camera.position.x, camera.position.y);
+    for (let step = 0; step <= stepCount; step += 1) {
+      const radians = (startDegrees + (fov * step) / stepCount) * Math.PI / 180;
+      ctx.lineTo(camera.position.x + Math.cos(radians) * radius, camera.position.y + Math.sin(radians) * radius);
+    }
+    ctx.closePath();
+    ctx.fill();
   }
 
   private drawPeople(ctx: CanvasContext, snapshot: TrackerSnapshot): void {

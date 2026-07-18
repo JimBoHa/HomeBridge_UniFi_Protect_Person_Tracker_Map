@@ -33,6 +33,21 @@ describe('config validation', () => {
     expect(requireAbsoluteSafePath('/tmp/map.png', 'mapImagePath')).toBe('/tmp/map.png');
   });
 
+  it('accepts and validates per-camera field of view', () => {
+    const parsed = mapConfigSchema.parse({
+      width: 100,
+      height: 100,
+      cameras: [{ id: 'a', name: 'A', position: { x: 10, y: 10 }, headingDegrees: 90, fovDegrees: 120 }],
+    });
+    expect(parsed.cameras[0]?.fovDegrees).toBe(120);
+
+    expect(() => mapConfigSchema.parse({
+      width: 100,
+      height: 100,
+      cameras: [{ id: 'a', name: 'A', position: { x: 10, y: 10 }, fovDegrees: 5 }],
+    })).toThrow();
+  });
+
   it('rejects camera coordinates outside map bounds', () => {
     expect(() => mapConfigSchema.parse({
       width: 100,

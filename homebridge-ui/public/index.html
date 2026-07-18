@@ -313,6 +313,10 @@
           camera.headingDegrees = Number.isFinite(value) ? clamp(value, 0, 359.999) : undefined;
           markDirty(); draw();
         }),
+        labeledNumber('FOV °', camera.fovDegrees ?? '', (value) => {
+          camera.fovDegrees = Number.isFinite(value) ? clamp(value, 10, 360) : undefined;
+          markDirty(); draw();
+        }),
       );
 
       const actions = document.createElement('div');

@@ -58,7 +58,8 @@
                   },
                   "required": ["x", "y"]
                 },
-                "headingDegrees": { "type": "number", "minimum": 0, "exclusiveMaximum": 360 }
+                "headingDegrees": { "type": "number", "minimum": 0, "exclusiveMaximum": 360 },
+                "fovDegrees": { "type": "number", "minimum": 10, "maximum": 360 }
               },
               "required": ["id", "name", "position"]
             }
