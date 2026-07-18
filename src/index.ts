@@ -82,7 +82,7 @@ class UniFiProtectPersonTrackerPlatform implements DynamicPlatformPlugin {
       } catch (error) {
         this.log.warn(`Protect event ignored: ${error instanceof Error ? error.message : String(error)}`);
       }
-    }, this.log, fetch, config.peopleTtlSeconds * 1000);
+    }, this.log, undefined, config.peopleTtlSeconds * 1000);
     this.protectAdapter.start();
 
     this.log.info(`Map snapshot available at ${snapshotUrl}`);
