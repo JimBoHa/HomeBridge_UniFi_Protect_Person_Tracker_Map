@@ -51,7 +51,8 @@ export class TrackerHttpServer {
 
   private async handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
     try {
-      if (request.method === 'GET' && request.url === '/snapshot.png') {
+      const pathname = (request.url ?? '/').split('?', 1)[0];
+      if (request.method === 'GET' && pathname === '/snapshot.png') {
         const png = await this.renderer.renderPng(this.tracker.snapshot());
         response.writeHead(200, {
           'content-type': 'image/png',
@@ -61,7 +62,7 @@ export class TrackerHttpServer {
         return;
       }
 
-      if (request.method === 'GET' && request.url === '/state') {
+      if (request.method === 'GET' && pathname === '/state') {
         if (!this.isAuthorized(request)) {
           writeJson(response, 401, { error: 'unauthorized' });
           return;
@@ -70,7 +71,7 @@ export class TrackerHttpServer {
         return;
       }
 
-      if (request.method === 'POST' && request.url === '/events') {
+      if (request.method === 'POST' && pathname === '/events') {
         if (!this.isAuthorized(request)) {
           writeJson(response, 401, { error: 'unauthorized' });
           return;
@@ -81,7 +82,7 @@ export class TrackerHttpServer {
         return;
       }
 
-      if (request.method === 'POST' && request.url === '/map-config') {
+      if (request.method === 'POST' && pathname === '/map-config') {
         if (!this.isAuthorized(request)) {
           writeJson(response, 401, { error: 'unauthorized' });
           return;
