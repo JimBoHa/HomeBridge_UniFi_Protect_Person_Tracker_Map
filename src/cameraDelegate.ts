@@ -172,7 +172,7 @@ export class MapCameraDelegate implements CameraStreamingDelegate {
       }
     };
     writeFrame();
-    session.frameTimer = setInterval(writeFrame, Math.max(250, Math.floor(1000 / fps)));
+    session.frameTimer = setInterval(writeFrame, Math.floor(1000 / fps));
     callback();
   }
 
