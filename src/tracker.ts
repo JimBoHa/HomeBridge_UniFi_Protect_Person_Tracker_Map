@@ -16,9 +16,12 @@ const palette = [
 const DEFAULT_CAMERA_PROJECTION_FEET = 10;
 const FOV_WIDTH_DEGREES = 90;
 
+export type PersonSeenListener = (person: PersonPosition) => void;
+
 export class PersonTracker {
   private readonly people = new Map<string, PersonPosition>();
   private readonly colors = new Map<string, string>();
+  private readonly listeners: PersonSeenListener[] = [];
 
   public constructor(
     private map: MapConfig,
@@ -28,6 +31,10 @@ export class PersonTracker {
 
   public setMap(map: MapConfig): void {
     this.map = map;
+  }
+
+  public onPersonSeen(listener: PersonSeenListener): void {
+    this.listeners.push(listener);
   }
 
   public ingest(event: ProtectPersonEvent): PersonPosition {
@@ -50,6 +57,9 @@ export class PersonTracker {
 
     this.people.set(event.personId, person);
     this.expire();
+    for (const listener of this.listeners) {
+      listener(person);
+    }
     return person;
   }
 

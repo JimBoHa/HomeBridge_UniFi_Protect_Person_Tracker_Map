@@ -17,6 +17,7 @@ class UniFiProtectPersonTrackerPlatform implements DynamicPlatformPlugin {
   private accessory?: PlatformAccessory;
   private httpServer?: TrackerHttpServer;
   private protectAdapter?: UniFiProtectAdapter;
+  private motionResetTimer?: NodeJS.Timeout;
 
   public constructor(
     private readonly log: Logging,
@@ -70,6 +71,7 @@ class UniFiProtectPersonTrackerPlatform implements DynamicPlatformPlugin {
         },
       },
     }));
+    this.configureMotionSensor(accessory, tracker, config.motionSensor, config.motionResetSeconds);
     if (isNew) {
       this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
     } else {
@@ -89,6 +91,38 @@ class UniFiProtectPersonTrackerPlatform implements DynamicPlatformPlugin {
     this.log.info('Use Bearer admin token for /events, /state, and /map-config write/read endpoints.');
   }
 
+  private configureMotionSensor(
+    accessory: PlatformAccessory,
+    tracker: PersonTracker,
+    enabled: boolean,
+    resetSeconds: number,
+  ): void {
+    const { Service, Characteristic } = this.api.hap;
+    const existing = accessory.getService(Service.MotionSensor);
+    if (!enabled) {
+      if (existing) {
+        accessory.removeService(existing);
+      }
+      return;
+    }
+
+    const service = existing ?? accessory.addService(Service.MotionSensor, 'Person Detected');
+    service.updateCharacteristic(Characteristic.MotionDetected, false);
+    const resetMs = resetSeconds * 1000;
+    tracker.onPersonSeen((person) => {
+      if (Date.now() - person.timestamp > resetMs) {
+        return;
+      }
+      service.updateCharacteristic(Characteristic.MotionDetected, true);
+      if (this.motionResetTimer) {
+        clearTimeout(this.motionResetTimer);
+      }
+      this.motionResetTimer = setTimeout(() => {
+        service.updateCharacteristic(Characteristic.MotionDetected, false);
+      }, resetMs);
+    });
+  }
+
   private getOrCreateAccessory(name: string): { accessory: PlatformAccessory; isNew: boolean } {
     if (this.accessory) {
       this.accessory.updateDisplayName(name);
@@ -103,6 +137,10 @@ class UniFiProtectPersonTrackerPlatform implements DynamicPlatformPlugin {
   }
 
   private async shutdown(): Promise<void> {
+    if (this.motionResetTimer) {
+      clearTimeout(this.motionResetTimer);
+      this.motionResetTimer = undefined;
+    }
     this.protectAdapter?.stop();
     await this.httpServer?.stop();
   }

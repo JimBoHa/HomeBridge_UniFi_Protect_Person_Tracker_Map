@@ -69,6 +69,8 @@ export const pluginConfigSchema = z.object({
   }).optional(),
   peopleTtlSeconds: z.number().int().min(10).default(86400),
   ffmpegPath: z.string().min(1).default('ffmpeg'),
+  motionSensor: z.boolean().default(false),
+  motionResetSeconds: z.number().int().min(5).max(3600).default(30),
 });
 
 export type ResolvedPluginConfig = z.infer<typeof pluginConfigSchema> & {

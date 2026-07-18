@@ -104,6 +104,20 @@
         "title": "FFmpeg Path",
         "type": "string",
         "default": "ffmpeg"
+      },
+      "motionSensor": {
+        "title": "Expose Motion Sensor",
+        "type": "boolean",
+        "default": false,
+        "description": "Add a HomeKit motion sensor that triggers whenever a person is detected, for use in automations."
+      },
+      "motionResetSeconds": {
+        "title": "Motion Reset Seconds",
+        "type": "integer",
+        "default": 30,
+        "minimum": 5,
+        "maximum": 3600,
+        "description": "Seconds after the last person detection before the motion sensor clears."
       }
     },
     "required": ["name"]
