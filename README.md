@@ -57,6 +57,8 @@ Open the plugin settings in Homebridge to upload a PNG, JPEG, or PDF map, discov
 
 Coordinates use the rendered map pixel space. If Protect supplies a path or direction, the marker arrow uses it. Otherwise the plugin extrapolates from previous camera position or camera heading.
 
+Each person also carries a movement trail of their recent positions, drawn as a fading line in the person's color. Configure the trail length with `trailPoints` (default 10 positions, `0` disables trails). Trails are included in `/state` responses as `trail` per person.
+
 ## Event Ingestion
 
 External processors can post normalized detections:

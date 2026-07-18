@@ -65,6 +65,28 @@ describe('PersonTracker', () => {
     expect(tracker.snapshot().people.map((person) => person.personId)).toEqual(['new']);
   });
 
+  it('records a bounded movement trail of prior positions', () => {
+    const tracker = new PersonTracker(map, 60_000, () => 1_000, 3);
+    tracker.ingest({ personId: 'p1', cameraId: 'hall', timestamp: 1_000, path: [{ x: 10, y: 10 }] });
+    tracker.ingest({ personId: 'p1', cameraId: 'hall', timestamp: 1_100, path: [{ x: 40, y: 10 }] });
+    tracker.ingest({ personId: 'p1', cameraId: 'hall', timestamp: 1_200, path: [{ x: 80, y: 10 }] });
+    tracker.ingest({ personId: 'p1', cameraId: 'hall', timestamp: 1_300, path: [{ x: 120, y: 10 }] });
+    const person = tracker.ingest({ personId: 'p1', cameraId: 'hall', timestamp: 1_400, path: [{ x: 160, y: 10 }] });
+
+    expect(person.trail).toEqual([
+      { x: 40, y: 10 },
+      { x: 80, y: 10 },
+      { x: 120, y: 10 },
+    ]);
+  });
+
+  it('omits trails when disabled', () => {
+    const tracker = new PersonTracker(map, 60_000, () => 1_000, 0);
+    tracker.ingest({ personId: 'p1', cameraId: 'front', timestamp: 1_000 });
+    const person = tracker.ingest({ personId: 'p1', cameraId: 'front', timestamp: 1_100 });
+    expect(person.trail).toBeUndefined();
+  });
+
   it('rejects unknown cameras', () => {
     const tracker = new PersonTracker(map, 60_000);
     expect(() => tracker.ingest({ personId: 'p1', cameraId: 'missing', timestamp: 1 })).toThrow('Unknown camera id');

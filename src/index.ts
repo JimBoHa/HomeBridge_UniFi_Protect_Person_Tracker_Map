@@ -38,7 +38,7 @@ class UniFiProtectPersonTrackerPlatform implements DynamicPlatformPlugin {
   private async launch(): Promise<void> {
     const config = resolvePluginConfig(this.rawConfig as PluginConfig);
     const map = await loadMapConfig(config.mapConfigPath, config.mapConfig);
-    const tracker = new PersonTracker(map, config.peopleTtlSeconds * 1000);
+    const tracker = new PersonTracker(map, config.peopleTtlSeconds * 1000, Date.now, config.trailPoints);
     const renderer = new MapRenderer({ path: config.mapImagePath, dataUrl: config.mapImageData });
     const httpServer = new TrackerHttpServer(tracker, renderer, config.adminToken, this.log);
     const actualPort = await httpServer.start(config.bindHost, config.port);

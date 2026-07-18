@@ -22,6 +22,7 @@ describe('MapRenderer', () => {
         timestamp: Date.parse('2026-05-24T12:00:00.000Z'),
         directionDegrees: 45,
         sourceCameraId: 'front',
+        trail: [{ x: 40, y: 40 }, { x: 70, y: 55 }],
       }],
     };
 

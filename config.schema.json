@@ -104,6 +104,14 @@
         "title": "FFmpeg Path",
         "type": "string",
         "default": "ffmpeg"
+      },
+      "trailPoints": {
+        "title": "Trail Points",
+        "type": "integer",
+        "default": 10,
+        "minimum": 0,
+        "maximum": 64,
+        "description": "Number of past positions drawn as a fading movement trail behind each person. 0 disables trails."
       }
     },
     "required": ["name"]

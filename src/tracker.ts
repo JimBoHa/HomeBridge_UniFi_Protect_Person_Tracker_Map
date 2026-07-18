@@ -1,4 +1,4 @@
-import type { CameraPlacement, MapConfig, PersonPosition, ProtectPersonEvent, TrackerSnapshot } from './types.js';
+import type { CameraPlacement, MapConfig, PersonPosition, Point, ProtectPersonEvent, TrackerSnapshot } from './types.js';
 
 const palette = [
   '#d7263d',
@@ -24,6 +24,7 @@ export class PersonTracker {
     private map: MapConfig,
     private readonly ttlMs: number,
     private readonly now: () => number = Date.now,
+    private readonly trailPoints = 10,
   ) {}
 
   public setMap(map: MapConfig): void {
@@ -46,6 +47,7 @@ export class PersonTracker {
       directionDegrees,
       sourceCameraId: event.cameraId,
       confidence: event.confidence,
+      trail: this.buildTrail(previous),
     };
 
     this.people.set(event.personId, person);
@@ -110,6 +112,21 @@ export class PersonTracker {
       x: camera.position.x + Math.cos(radians) * distance,
       y: camera.position.y + Math.sin(radians) * distance,
     });
+  }
+
+  private buildTrail(previous?: PersonPosition): Point[] | undefined {
+    if (this.trailPoints <= 0) {
+      return undefined;
+    }
+    if (!previous) {
+      return [];
+    }
+    const trail = [...(previous.trail ?? [])];
+    const last = trail.at(-1);
+    if (!last || Math.hypot(last.x - previous.position.x, last.y - previous.position.y) > 0.5) {
+      trail.push(previous.position);
+    }
+    return trail.slice(-this.trailPoints);
   }
 
   private clampToCameraFov(directionDegrees: number | undefined, camera: CameraPlacement): number | undefined {
