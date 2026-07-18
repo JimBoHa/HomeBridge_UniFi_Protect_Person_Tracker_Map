@@ -127,7 +127,7 @@ export class MapCameraDelegate implements CameraStreamingDelegate {
       '-f', 'rtp',
       '-srtp_out_suite', cryptoSuite === SRTPCryptoSuites.AES_CM_128_HMAC_SHA1_80 ? 'AES_CM_128_HMAC_SHA1_80' : 'NONE',
       '-srtp_out_params', srtpParams,
-      `srtp://${session.address}:${session.videoPort}?rtcpport=${session.videoPort}&pkt_size=${request.video.mtu}`,
+      `srtp://${session.address}:${session.videoPort}?rtcpport=${session.videoPort}&localrtpport=${session.localVideoPort}&pkt_size=${request.video.mtu}`,
     ];
 
     this.logger.info(`Starting map stream ${width}x${height}@${fps}fps to ${session.address}:${session.videoPort} from ${session.localVideoPort}`);
