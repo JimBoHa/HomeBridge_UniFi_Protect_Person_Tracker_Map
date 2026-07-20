@@ -1,8 +1,9 @@
-import type { API, DynamicPlatformPlugin, Logging, PlatformAccessory, PlatformConfig } from 'homebridge';
+import type { API, DynamicPlatformPlugin, Logging, PlatformAccessory, PlatformConfig, Service } from 'homebridge';
 import { APIEvent, H264Level, H264Profile, SRTPCryptoSuites } from 'homebridge';
 import { MapCameraDelegate } from './cameraDelegate.js';
 import { loadMapConfig, resolvePluginConfig } from './config.js';
 import { TrackerHttpServer } from './httpServer.js';
+import { MotionSensorController } from './motionSensor.js';
 import { UniFiProtectAdapter } from './protectAdapter.js';
 import { MapRenderer } from './renderer.js';
 import { PLATFORM_NAME, PLUGIN_NAME } from './settings.js';
@@ -17,7 +18,7 @@ class UniFiProtectPersonTrackerPlatform implements DynamicPlatformPlugin {
   private accessory?: PlatformAccessory;
   private httpServer?: TrackerHttpServer;
   private protectAdapter?: UniFiProtectAdapter;
-  private motionResetTimer?: NodeJS.Timeout;
+  private motionSensor?: MotionSensorController;
 
   public constructor(
     private readonly log: Logging,
@@ -53,9 +54,11 @@ class UniFiProtectPersonTrackerPlatform implements DynamicPlatformPlugin {
       .setCharacteristic(this.api.hap.Characteristic.SerialNumber, 'person-tracker-map');
 
     const delegate = new MapCameraDelegate(tracker, renderer, config.ffmpegPath, this.log);
+    const motionService = this.configureMotionSensor(accessory, tracker, config.motionSensor, config.motionResetSeconds);
     accessory.configureController(new this.api.hap.CameraController({
       cameraStreamCount: 2,
       delegate,
+      sensors: motionService ? { motion: motionService } : undefined,
       streamingOptions: {
         supportedCryptoSuites: [SRTPCryptoSuites.AES_CM_128_HMAC_SHA1_80],
         video: {
@@ -71,7 +74,6 @@ class UniFiProtectPersonTrackerPlatform implements DynamicPlatformPlugin {
         },
       },
     }));
-    this.configureMotionSensor(accessory, tracker, config.motionSensor, config.motionResetSeconds);
     if (isNew) {
       this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
     } else {
@@ -96,31 +98,25 @@ class UniFiProtectPersonTrackerPlatform implements DynamicPlatformPlugin {
     tracker: PersonTracker,
     enabled: boolean,
     resetSeconds: number,
-  ): void {
+  ): Service | undefined {
     const { Service, Characteristic } = this.api.hap;
     const existing = accessory.getService(Service.MotionSensor);
     if (!enabled) {
       if (existing) {
         accessory.removeService(existing);
       }
-      return;
+      return undefined;
     }
 
     const service = existing ?? accessory.addService(Service.MotionSensor, 'Person Detected');
     service.updateCharacteristic(Characteristic.MotionDetected, false);
-    const resetMs = resetSeconds * 1000;
-    tracker.onPersonSeen((person) => {
-      if (Date.now() - person.timestamp > resetMs) {
-        return;
-      }
-      service.updateCharacteristic(Characteristic.MotionDetected, true);
-      if (this.motionResetTimer) {
-        clearTimeout(this.motionResetTimer);
-      }
-      this.motionResetTimer = setTimeout(() => {
-        service.updateCharacteristic(Characteristic.MotionDetected, false);
-      }, resetMs);
+    this.motionSensor = new MotionSensorController(resetSeconds * 1000, (detected) => {
+      service.updateCharacteristic(Characteristic.MotionDetected, detected);
     });
+    tracker.onPersonSeen((person) => {
+      this.motionSensor?.personSeen(person);
+    });
+    return service;
   }
 
   private getOrCreateAccessory(name: string): { accessory: PlatformAccessory; isNew: boolean } {
@@ -137,10 +133,8 @@ class UniFiProtectPersonTrackerPlatform implements DynamicPlatformPlugin {
   }
 
   private async shutdown(): Promise<void> {
-    if (this.motionResetTimer) {
-      clearTimeout(this.motionResetTimer);
-      this.motionResetTimer = undefined;
-    }
+    this.motionSensor?.stop();
+    this.motionSensor = undefined;
     this.protectAdapter?.stop();
     await this.httpServer?.stop();
   }

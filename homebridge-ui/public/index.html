@@ -45,6 +45,12 @@
         <label class="check"><input id="protect-ignore-tls" type="checkbox"><span>Ignore TLS certificate errors</span></label>
       </div>
 
+      <div class="section-title">HomeKit automation</div>
+      <div class="field-grid">
+        <label class="check"><input id="motion-sensor" type="checkbox"><span>Expose person motion sensor</span></label>
+        <label><span>Clear after seconds</span><input id="motion-reset" class="form-control" type="number" min="5" max="3600" step="1"></label>
+      </div>
+
       <div class="section-title">Scale</div>
       <div class="scale-grid">
         <label><span>Pixels</span><input id="scale-pixels" class="form-control" type="number" min="1" step="1"></label>
@@ -96,6 +102,7 @@
     discover: el('discover'), addCamera: el('add-camera'), cameraList: el('camera-list'), deleteConfig: el('delete-config'),
     selectedLabel: el('selected-label'), setScale: el('set-scale'), scalePixels: el('scale-pixels'),
     scaleDistance: el('scale-distance'), scaleUnit: el('scale-unit'), scaleHint: el('scale-hint'),
+    motionSensor: el('motion-sensor'), motionReset: el('motion-reset'),
   };
 
   const setStatus = (message) => { fields.status.textContent = message; };
@@ -122,6 +129,8 @@
       name: 'Person Tracker Map',
       peopleTtlSeconds: 86400,
       ffmpegPath: 'ffmpeg',
+      motionSensor: false,
+      motionResetSeconds: 30,
       protect: { ignoreTls: true, pollSeconds: 5 },
       ...existing,
     };
@@ -134,6 +143,9 @@
     fields.password.value = state.config.protect?.password ?? '';
     fields.poll.value = String(state.config.protect?.pollSeconds ?? 5);
     fields.ignoreTls.checked = Boolean(state.config.protect?.ignoreTls);
+    fields.motionSensor.checked = Boolean(state.config.motionSensor);
+    fields.motionReset.value = String(state.config.motionResetSeconds ?? 30);
+    syncMotionControls();
     fields.scalePixels.value = state.map.scale?.pixels ? String(Math.round(state.map.scale.pixels)) : '';
     fields.scaleDistance.value = state.map.scale?.distance ? String(state.map.scale.distance) : '';
     fields.scaleUnit.value = state.map.scale?.unit ?? 'ft';
@@ -149,6 +161,8 @@
       ignoreTls: fields.ignoreTls.checked,
       pollSeconds: Math.max(2, Number.parseInt(fields.poll.value, 10) || 5),
     };
+    state.config.motionSensor = fields.motionSensor.checked;
+    state.config.motionResetSeconds = clamp(Number.parseInt(fields.motionReset.value, 10) || 30, 5, 3600);
     const pixels = Number.parseFloat(fields.scalePixels.value);
     const distance = Number.parseFloat(fields.scaleDistance.value);
     state.map.scale = pixels > 0 && distance > 0 ? { pixels, distance, unit: fields.scaleUnit.value } : undefined;
@@ -158,6 +172,10 @@
       scale: state.map.scale,
       cameras: state.map.cameras.filter((camera) => camera.position),
     };
+  }
+
+  function syncMotionControls() {
+    fields.motionReset.disabled = !fields.motionSensor.checked;
   }
 
   function buildBlocks() {
@@ -533,7 +551,8 @@
     setStatus('Scale mode active.');
   });
 
-  for (const input of [fields.name, fields.host, fields.username, fields.password, fields.poll, fields.ignoreTls, fields.scalePixels, fields.scaleDistance, fields.scaleUnit]) {
+  fields.motionSensor.addEventListener('change', syncMotionControls);
+  for (const input of [fields.name, fields.host, fields.username, fields.password, fields.poll, fields.ignoreTls, fields.motionSensor, fields.motionReset, fields.scalePixels, fields.scaleDistance, fields.scaleUnit]) {
     input.addEventListener('input', () => markDirty());
     input.addEventListener('change', () => markDirty());
   }
