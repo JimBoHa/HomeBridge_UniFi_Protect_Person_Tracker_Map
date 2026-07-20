@@ -140,15 +140,15 @@ export function extractPersonEvents(payload: unknown, afterTimestamp = 0): Prote
 
     if (personThumbnails.length > 0) {
       const directionDegrees = routeDirectionDegrees(value.metadata);
-      for (const thumbnail of personThumbnails) {
+      for (const { thumbnail, identity } of thumbnailDetections(personThumbnails)) {
         const thumbTimestamp = timestampValue(thumbnail.clockBestWall) ?? timestamp;
-        const personId = personIdFromThumbnail(thumbnail) ?? stringValue(value.personId) ?? stringValue(value.faceId) ?? stringValue(value.userId) ?? personName ?? String(value.id ?? `${cameraId}:${thumbTimestamp}`);
+        const personId = personIdFromThumbnails(thumbnail, identity) ?? stringValue(value.personId) ?? stringValue(value.faceId) ?? stringValue(value.userId) ?? personName ?? String(value.id ?? `${cameraId}:${thumbTimestamp}`);
         events.push({
           personId,
-          name: personName ?? nameFromThumbnail(thumbnail),
+          name: nameFromThumbnails(thumbnail, identity, personName),
           cameraId,
           timestamp: thumbTimestamp,
-          confidence: numberValue(thumbnail.confidence) ?? numberValue(value.confidence ?? value.score),
+          confidence: confidenceFromThumbnails(thumbnail, identity) ?? numberValue(value.confidence ?? value.score),
           directionDegrees,
         });
       }
@@ -224,6 +224,13 @@ type Thumbnail = {
   objectId?: string;
   labels?: string[];
   attributes?: Record<string, unknown>;
+  group?: {
+    id?: string;
+    name?: string;
+    matchedName?: string;
+    confidence?: number;
+  };
+  name?: string;
   confidence?: number;
   clockBestWall?: number;
 };
@@ -238,25 +245,136 @@ function detectedThumbnails(value: unknown): Thumbnail[] {
       type: stringValue(thumbnail.type)?.toLowerCase(),
       objectId: stringValue(thumbnail.objectId),
       labels: Array.isArray(thumbnail.labels) ? thumbnail.labels.map(String) : undefined,
-      attributes: isRecord(thumbnail.attributes) ? thumbnail.attributes : undefined,
+      attributes: thumbnailAttributes(thumbnail),
+      group: thumbnailGroup(thumbnail.group),
+      name: stringValue(thumbnail.name),
       confidence: numberValue(thumbnail.confidence),
       clockBestWall: numberValue(thumbnail.clockBestWall),
     }));
 }
 
-function personIdFromThumbnail(thumbnail: Thumbnail): string | undefined {
-  const group = thumbnail.labels?.find((label) => label.startsWith('group:'))?.split(':')[1];
-  const trackerId = numberValue(thumbnail.attributes?.trackerId);
-  const associatedFaceTrackerId = numberValue(thumbnail.attributes?.associatedFaceTrackerID);
-  return group ?? (associatedFaceTrackerId ? `face-tracker-${associatedFaceTrackerId}` : undefined) ?? (trackerId ? `tracker-${trackerId}` : undefined) ?? thumbnail.objectId;
+function thumbnailAttributes(thumbnail: Record<string, unknown>): Record<string, unknown> | undefined {
+  const attrs = isRecord(thumbnail.attrs) ? thumbnail.attrs : undefined;
+  const attributes = isRecord(thumbnail.attributes) ? thumbnail.attributes : undefined;
+  return attrs || attributes ? { ...attrs, ...attributes } : undefined;
 }
 
-function nameFromThumbnail(thumbnail: Thumbnail): string | undefined {
-  const groupType = thumbnail.labels?.find((label) => label.startsWith('groupType:'))?.split(':')[1];
-  if (groupType && groupType !== 'unknown') {
-    return groupType;
+function thumbnailGroup(value: unknown): Thumbnail['group'] {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+  return {
+    id: idValue(value.id),
+    name: stringValue(value.name),
+    matchedName: stringValue(value.matchedName),
+    confidence: numberValue(value.confidence),
+  };
+}
+
+function thumbnailDetections(thumbnails: Thumbnail[]): { thumbnail: Thumbnail; identity?: Thumbnail }[] {
+  const facesByTrackerId = new Map<string, Thumbnail[]>();
+  for (const thumbnail of thumbnails) {
+    if (thumbnail.type !== 'face') {
+      continue;
+    }
+    const trackerId = trackerIdFromThumbnail(thumbnail);
+    if (trackerId) {
+      facesByTrackerId.set(trackerId, [...(facesByTrackerId.get(trackerId) ?? []), thumbnail]);
+    }
+  }
+
+  const identities = new Map<Thumbnail, Thumbnail>();
+  const matchedFaces = new Set<Thumbnail>();
+  for (const thumbnail of thumbnails) {
+    if (thumbnail.type !== 'person') {
+      continue;
+    }
+    const associatedFaceTrackerId = idValue(thumbnail.attributes?.associatedFaceTrackerID);
+    const identity = associatedFaceTrackerId
+      ? facesByTrackerId.get(associatedFaceTrackerId)?.find((face) => !matchedFaces.has(face))
+      : undefined;
+    if (identity) {
+      identities.set(thumbnail, identity);
+      matchedFaces.add(identity);
+    }
+  }
+
+  return thumbnails.flatMap((thumbnail) => {
+    if (matchedFaces.has(thumbnail)) {
+      return [];
+    }
+    return [{ thumbnail, identity: identities.get(thumbnail) }];
+  });
+}
+
+function personIdFromThumbnails(thumbnail: Thumbnail, identity?: Thumbnail): string | undefined {
+  const candidates = identity ? [identity, thumbnail] : [thumbnail];
+  for (const candidate of candidates) {
+    if (candidate.group?.id) {
+      return candidate.group.id;
+    }
+  }
+  for (const candidate of candidates) {
+    const legacyGroup = labelValue(candidate.labels, 'group:');
+    if (legacyGroup) {
+      return legacyGroup;
+    }
+  }
+  for (const candidate of candidates) {
+    const trackerId = trackerIdFromThumbnail(candidate);
+    if (trackerId) {
+      return 'tracker-' + trackerId;
+    }
+  }
+  return candidates.find((candidate) => candidate.objectId)?.objectId;
+}
+
+function nameFromThumbnails(thumbnail: Thumbnail, identity?: Thumbnail, eventName?: string): string {
+  const candidates = identity ? [identity, thumbnail] : [thumbnail];
+  for (const candidate of candidates) {
+    const name = candidate.group?.matchedName ?? candidate.group?.name ?? candidate.name;
+    if (name) {
+      return name;
+    }
+  }
+  if (eventName) {
+    return eventName;
+  }
+  for (const candidate of candidates) {
+    const groupType = labelValue(candidate.labels, 'groupType:');
+    if (groupType && groupType.toLowerCase() !== 'unknown') {
+      return groupType;
+    }
   }
   return thumbnail.type === 'face' ? 'Face' : 'Person';
+}
+
+function confidenceFromThumbnails(thumbnail: Thumbnail, identity?: Thumbnail): number | undefined {
+  const candidates = identity ? [identity, thumbnail] : [thumbnail];
+  for (const candidate of candidates) {
+    if (candidate.group?.confidence !== undefined) {
+      return candidate.group.confidence;
+    }
+  }
+  for (const candidate of candidates) {
+    if (candidate.confidence !== undefined) {
+      return candidate.confidence;
+    }
+  }
+  return undefined;
+}
+
+function trackerIdFromThumbnail(thumbnail: Thumbnail): string | undefined {
+  return idValue(thumbnail.attributes?.trackerId);
+}
+
+function labelValue(labels: string[] | undefined, prefix: string): string | undefined {
+  const label = labels?.find((candidate) => candidate.startsWith(prefix));
+  return label ? stringValue(label.slice(prefix.length)) : undefined;
+}
+
+function idValue(value: unknown): string | undefined {
+  return stringValue(value) ?? (typeof value === 'number' && Number.isFinite(value) ? String(value) : undefined);
 }
 
 function routeDirectionDegrees(metadata: unknown): number | undefined {
