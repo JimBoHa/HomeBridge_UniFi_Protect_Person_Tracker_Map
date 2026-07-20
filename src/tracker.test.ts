@@ -29,6 +29,30 @@ describe('PersonTracker', () => {
     expect(snapshot.people[0]?.position.y).toBeCloseTo(150, 1);
   });
 
+  it('does not let stale events overwrite newer positions', () => {
+    const tracker = new PersonTracker(map, 60_000, () => 2_000);
+    tracker.ingest({ personId: 'p1', name: 'Ada', cameraId: 'hall', timestamp: 2_000 });
+
+    const returned = tracker.ingest({ personId: 'p1', cameraId: 'front', timestamp: 1_000 });
+    const [person] = tracker.snapshot().people;
+
+    expect(returned).toMatchObject({ timestamp: 2_000, sourceCameraId: 'hall' });
+    expect(person).toMatchObject({ timestamp: 2_000, sourceCameraId: 'hall', name: 'Ada' });
+  });
+
+  it('accepts same-timestamp identity enrichment', () => {
+    const tracker = new PersonTracker(map, 60_000, () => 2_000);
+    tracker.ingest({ personId: 'p1', cameraId: 'front', timestamp: 2_000 });
+    tracker.ingest({ personId: 'p1', name: 'Ada', cameraId: 'hall', timestamp: 2_000, confidence: 0.97 });
+
+    expect(tracker.snapshot().people[0]).toMatchObject({
+      name: 'Ada',
+      confidence: 0.97,
+      sourceCameraId: 'hall',
+      timestamp: 2_000,
+    });
+  });
+
   it('derives direction from path and clamps map bounds', () => {
     const tracker = new PersonTracker(map, 60_000, () => 1_000);
     const person = tracker.ingest({
