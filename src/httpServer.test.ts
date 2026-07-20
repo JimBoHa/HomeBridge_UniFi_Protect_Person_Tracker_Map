@@ -35,6 +35,21 @@ describe('TrackerHttpServer', () => {
     expect(response.headers.get('content-type')).toBe('image/png');
   });
 
+  it('serves routes when the URL includes a query string', async () => {
+    const tracker = new PersonTracker(map, 60_000);
+    server = new TrackerHttpServer(tracker, new MapRenderer(), 'secure-token-secure-token-1234', logger);
+    const port = await server.start('127.0.0.1', 0);
+
+    const snapshot = await fetch(`http://127.0.0.1:${port}/snapshot.png?ts=${Date.now()}`);
+    expect(snapshot.status).toBe(200);
+    expect(snapshot.headers.get('content-type')).toBe('image/png');
+
+    const state = await fetch(`http://127.0.0.1:${port}/state?pretty=1`, {
+      headers: { authorization: 'Bearer secure-token-secure-token-1234' },
+    });
+    expect(state.status).toBe(200);
+  });
+
   it('requires bearer token for state and event ingestion', async () => {
     const tracker = new PersonTracker(map, 60_000);
     server = new TrackerHttpServer(tracker, new MapRenderer(), 'secure-token-secure-token-1234', logger);
