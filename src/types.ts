@@ -70,6 +70,8 @@ export type PluginConfig = {
   protect?: ProtectConfig;
   peopleTtlSeconds?: number;
   ffmpegPath?: string;
+  motionSensor?: boolean;
+  motionResetSeconds?: number;
 };
 
 export type Logger = {

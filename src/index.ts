@@ -1,8 +1,9 @@
-import type { API, DynamicPlatformPlugin, Logging, PlatformAccessory, PlatformConfig } from 'homebridge';
+import type { API, DynamicPlatformPlugin, Logging, PlatformAccessory, PlatformConfig, Service } from 'homebridge';
 import { APIEvent, H264Level, H264Profile, SRTPCryptoSuites } from 'homebridge';
 import { MapCameraDelegate } from './cameraDelegate.js';
 import { loadMapConfig, resolvePluginConfig } from './config.js';
 import { TrackerHttpServer } from './httpServer.js';
+import { MotionSensorController } from './motionSensor.js';
 import { UniFiProtectAdapter } from './protectAdapter.js';
 import { MapRenderer } from './renderer.js';
 import { PLATFORM_NAME, PLUGIN_NAME } from './settings.js';
@@ -45,6 +46,7 @@ export class UniFiProtectPersonTrackerPlatform implements DynamicPlatformPlugin 
   private protectAdapter?: ProtectAdapterLifecycle;
   private launchPromise?: Promise<void>;
   private shutdownRequested = false;
+  private motionSensor?: MotionSensorController;
 
   public constructor(
     private readonly log: Logging,
@@ -103,9 +105,11 @@ export class UniFiProtectPersonTrackerPlatform implements DynamicPlatformPlugin 
         .setCharacteristic(this.api.hap.Characteristic.SerialNumber, 'person-tracker-map');
 
       const delegate = new MapCameraDelegate(tracker, renderer, config.ffmpegPath, this.log);
+      const motionService = this.configureMotionSensor(accessory, tracker, config.motionSensor, config.motionResetSeconds);
       accessory.configureController(new this.api.hap.CameraController({
         cameraStreamCount: 2,
         delegate,
+        sensors: motionService ? { motion: motionService } : undefined,
         streamingOptions: {
           supportedCryptoSuites: [SRTPCryptoSuites.AES_CM_128_HMAC_SHA1_80],
           video: {
@@ -151,6 +155,32 @@ export class UniFiProtectPersonTrackerPlatform implements DynamicPlatformPlugin 
     }
   }
 
+  private configureMotionSensor(
+    accessory: PlatformAccessory,
+    tracker: PersonTracker,
+    enabled: boolean,
+    resetSeconds: number,
+  ): Service | undefined {
+    const { Service, Characteristic } = this.api.hap;
+    const existing = accessory.getService(Service.MotionSensor);
+    if (!enabled) {
+      if (existing) {
+        accessory.removeService(existing);
+      }
+      return undefined;
+    }
+
+    const service = existing ?? accessory.addService(Service.MotionSensor, 'Person Detected');
+    service.updateCharacteristic(Characteristic.MotionDetected, false);
+    this.motionSensor = new MotionSensorController(resetSeconds * 1000, (detected) => {
+      service.updateCharacteristic(Characteristic.MotionDetected, detected);
+    });
+    tracker.onPersonSeen((person) => {
+      this.motionSensor?.personSeen(person);
+    });
+    return service;
+  }
+
   private getOrCreateAccessory(name: string): { accessory: PlatformAccessory; isNew: boolean } {
     if (this.accessory) {
       this.accessory.updateDisplayName(name);
@@ -176,6 +206,8 @@ export class UniFiProtectPersonTrackerPlatform implements DynamicPlatformPlugin 
     const httpServer = this.httpServer;
     this.protectAdapter = undefined;
     this.httpServer = undefined;
+    this.motionSensor?.stop();
+    this.motionSensor = undefined;
 
     let shutdownError: unknown;
     try {
@@ -197,6 +229,8 @@ export class UniFiProtectPersonTrackerPlatform implements DynamicPlatformPlugin 
     protectAdapter: ProtectAdapterLifecycle | undefined,
     httpServer: HttpServerLifecycle | undefined,
   ): Promise<void> {
+    this.motionSensor?.stop();
+    this.motionSensor = undefined;
     try {
       await protectAdapter?.stop();
     } catch (error) {

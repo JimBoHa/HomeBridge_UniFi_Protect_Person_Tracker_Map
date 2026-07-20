@@ -38,6 +38,8 @@ Open the plugin settings in Homebridge to upload a PNG, JPEG, or PDF map, discov
 
 `adminToken` protects `/state`, `/events`, and `/map-config`. Do not expose the HTTP server to the internet.
 
+Enable the HomeKit motion sensor in the plugin settings (or set `"motionSensor": true`). It triggers for current person detections from the Protect poller or `/events` and remains active until `motionResetSeconds` after the newest detection timestamp (default 30). Expired replayed events do not trigger or extend it.
+
 ## Map Config
 
 ```json

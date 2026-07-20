@@ -120,6 +120,17 @@ describe('PersonTracker', () => {
     expect(new Set(activeColors).size).toBe(activeColors.length);
   });
 
+  it('notifies person seen listeners on ingest', () => {
+    const tracker = new PersonTracker(map, 60_000, () => 1_000);
+    const seen: string[] = [];
+    tracker.onPersonSeen((person) => seen.push(person.personId));
+
+    tracker.ingest({ personId: 'p1', cameraId: 'front', timestamp: 1_000 });
+    tracker.ingest({ personId: 'p2', cameraId: 'hall', timestamp: 1_000 });
+
+    expect(seen).toEqual(['p1', 'p2']);
+  });
+
   it('rejects unknown cameras', () => {
     const tracker = new PersonTracker(map, 60_000);
     expect(() => tracker.ingest({ personId: 'p1', cameraId: 'missing', timestamp: 1 })).toThrow('Unknown camera id');

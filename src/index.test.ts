@@ -46,7 +46,11 @@ function createAccessory(configureController = vi.fn()): PlatformAccessory {
   return {
     context: {},
     updateDisplayName: vi.fn(),
-    getService: vi.fn(() => informationService),
+    getService: vi.fn()
+      .mockReturnValueOnce(informationService)
+      .mockReturnValue(undefined),
+    addService: vi.fn(),
+    removeService: vi.fn(),
     configureController,
   } as unknown as PlatformAccessory;
 }

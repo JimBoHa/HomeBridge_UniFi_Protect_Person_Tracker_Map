@@ -28,6 +28,18 @@ describe('config validation', () => {
     })).toThrow('map image');
   });
 
+  it('defaults and validates motion sensor settings', () => {
+    const defaults = resolvePluginConfig({ name: 'Map' });
+    expect(defaults.motionSensor).toBe(false);
+    expect(defaults.motionResetSeconds).toBe(30);
+
+    const enabled = resolvePluginConfig({ name: 'Map', motionSensor: true, motionResetSeconds: 120 });
+    expect(enabled.motionSensor).toBe(true);
+    expect(enabled.motionResetSeconds).toBe(120);
+
+    expect(() => resolvePluginConfig({ name: 'Map', motionResetSeconds: 1 })).toThrow();
+  });
+
   it('requires absolute local paths to prevent ambiguous traversal', () => {
     expect(() => requireAbsoluteSafePath('../secret', 'mapImagePath')).toThrow('absolute');
     expect(requireAbsoluteSafePath('/tmp/map.png', 'mapImagePath')).toBe('/tmp/map.png');
