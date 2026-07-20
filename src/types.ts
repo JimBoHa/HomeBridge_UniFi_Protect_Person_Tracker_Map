@@ -8,6 +8,7 @@ export type CameraPlacement = {
   name: string;
   position: Point;
   headingDegrees?: number;
+  fovDegrees?: number;
 };
 
 export type MapConfig = {

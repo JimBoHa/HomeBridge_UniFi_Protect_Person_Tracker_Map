@@ -131,6 +131,23 @@ describe('PersonTracker', () => {
     expect(seen).toEqual(['p1', 'p2']);
   });
 
+  it('respects per-camera field of view when clamping directions', () => {
+    const wideMap: MapConfig = {
+      ...map,
+      cameras: [
+        { id: 'wide', name: 'Wide', position: { x: 100, y: 50 }, headingDegrees: 90, fovDegrees: 180 },
+        { id: 'full', name: 'Full', position: { x: 100, y: 50 }, headingDegrees: 90, fovDegrees: 360 },
+      ],
+    };
+
+    const tracker = new PersonTracker(wideMap, 60_000, () => 1_000);
+    const wide = tracker.ingest({ personId: 'p1', cameraId: 'wide', timestamp: 1_000, directionDegrees: 200 });
+    expect(wide.directionDegrees).toBe(180);
+
+    const full = tracker.ingest({ personId: 'p2', cameraId: 'full', timestamp: 1_000, directionDegrees: 280 });
+    expect(full.directionDegrees).toBe(280);
+  });
+
   it('rejects unknown cameras', () => {
     const tracker = new PersonTracker(map, 60_000);
     expect(() => tracker.ingest({ personId: 'p1', cameraId: 'missing', timestamp: 1 })).toThrow('Unknown camera id');

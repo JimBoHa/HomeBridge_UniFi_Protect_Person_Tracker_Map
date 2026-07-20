@@ -38,6 +38,7 @@ export const mapConfigSchema = z.object({
     name: z.string().min(1).max(128),
     position: pointSchema,
     headingDegrees: z.number().finite().min(0).lt(360).optional(),
+    fovDegrees: z.number().finite().min(10).max(360).optional(),
   })).max(512),
 }).superRefine((config, ctx) => {
   const cameraIds = new Set<string>();

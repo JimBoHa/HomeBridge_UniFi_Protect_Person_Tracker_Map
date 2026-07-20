@@ -51,11 +51,14 @@ Enable the HomeKit motion sensor in the plugin settings (or set `"motionSensor":
       "id": "camera-id-from-protect",
       "name": "Front Door",
       "position": { "x": 240, "y": 180 },
-      "headingDegrees": 90
+      "headingDegrees": 90,
+      "fovDegrees": 110
     }
   ]
 }
 ```
+
+`fovDegrees` (optional, 10-360) sets each camera's horizontal field of view. Detections are projected into this cone around `headingDegrees`; use wider values for wide-angle or fisheye cameras (`360` disables the cone entirely). When omitted, projection keeps the legacy 90-degree default and no coverage wedge is drawn. Setting it renders a translucent FOV wedge on the map and in the custom UI preview.
 
 Coordinates use the rendered map pixel space. If Protect supplies a path or direction, the marker arrow uses it. Otherwise the plugin extrapolates from previous camera position or camera heading.
 
