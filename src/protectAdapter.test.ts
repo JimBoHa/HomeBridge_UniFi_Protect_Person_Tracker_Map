@@ -1,3 +1,4 @@
+import { createServer } from 'node:http';
 import { describe, expect, it, vi } from 'vitest';
 import { extractPersonEvents, UniFiProtectAdapter } from './protectAdapter.js';
 import type { Logger, ProtectPersonEvent } from './types.js';
@@ -112,6 +113,55 @@ describe('extractPersonEvents', () => {
     adapter.start();
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('credentials not configured'));
     adapter.stop();
+  });
+
+  it('uses the package fetch that owns the TLS dispatcher', async () => {
+    const globalFetch = vi.fn<typeof fetch>().mockRejectedValue(new Error('Node global fetch was used'));
+    vi.stubGlobal('fetch', globalFetch);
+    const requestPaths: string[] = [];
+    const sunk: ProtectPersonEvent[] = [];
+    const server = createServer((request, response) => {
+      requestPaths.push(request.url ?? '');
+      response.setHeader('connection', 'close');
+      if (request.url === '/api/auth/login') {
+        response.setHeader('set-cookie', 'TOKEN=test; Path=/');
+        response.end('{}');
+        return;
+      }
+      response.setHeader('content-type', 'application/json');
+      response.end(JSON.stringify({
+        events: [{ type: 'person', personId: 'p1', cameraId: 'front', timestamp: Date.now() }],
+      }));
+    });
+    await new Promise<void>((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(0, '127.0.0.1', resolve);
+    });
+    const address = server.address();
+    if (!address || typeof address === 'string') {
+      throw new Error('Test HTTP server did not bind a TCP port');
+    }
+
+    const adapter = new UniFiProtectAdapter({
+      host: `http://127.0.0.1:${address.port}`,
+      username: 'user',
+      password: 'pass',
+      ignoreTls: true,
+      pollSeconds: 60,
+    }, (event) => sunk.push(event), logger);
+
+    try {
+      adapter.start();
+      await vi.waitFor(() => expect(sunk).toHaveLength(1));
+    } finally {
+      adapter.stop();
+      vi.unstubAllGlobals();
+      await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+    }
+
+    expect(globalFetch).not.toHaveBeenCalled();
+    expect(requestPaths[0]).toBe('/api/auth/login');
+    expect(requestPaths[1]).toContain('/proxy/protect/api/events?');
   });
 
   it('logs in and sinks parsed person events while polling', async () => {
