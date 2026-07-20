@@ -1,6 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createSocket } from 'node:dgram';
 import { existsSync } from 'node:fs';
+import type { Writable } from 'node:stream';
 import type {
   CameraStreamingDelegate,
   PrepareStreamCallback,
@@ -31,7 +32,12 @@ type SessionInfo = {
   cachedFrame?: Buffer;
   frameRenderedAt?: number;
   frameRender?: Promise<void>;
+  frameWriteState?: FrameWriteState;
   finishStart?: (error?: Error) => void;
+};
+
+export type FrameWriteState = {
+  blocked: boolean;
 };
 
 export class MapCameraDelegate implements CameraStreamingDelegate {
@@ -218,7 +224,8 @@ export class MapCameraDelegate implements CameraStreamingDelegate {
         refreshFrame();
       }
       if (session.process === ffmpegProcess && session.cachedFrame && ffmpegProcess.stdin.writable) {
-        ffmpegProcess.stdin.write(session.cachedFrame);
+        session.frameWriteState ??= { blocked: false };
+        writeFrameWithBackpressure(ffmpegProcess.stdin, session.cachedFrame, session.frameWriteState);
       }
     };
     ffmpegProcess.once('spawn', () => {
@@ -312,6 +319,18 @@ function frameCacheKey(width: number, height: number): string {
 
 function toError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error));
+}
+
+export function writeFrameWithBackpressure(stdin: Writable, frame: Buffer, state: FrameWriteState): void {
+  if (!stdin.writable || state.blocked) {
+    return;
+  }
+  if (!stdin.write(frame)) {
+    state.blocked = true;
+    stdin.once('drain', () => {
+      state.blocked = false;
+    });
+  }
 }
 
 function resolveFfmpegPath(ffmpegPath: string): string {

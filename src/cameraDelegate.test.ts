@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events';
-import { PassThrough } from 'node:stream';
+import { PassThrough, type Writable } from 'node:stream';
 import type { ChildProcessWithoutNullStreams } from 'node:child_process';
 import type {
   PrepareStreamRequest,
@@ -9,7 +9,7 @@ import type {
 } from 'homebridge';
 import { SRTPCryptoSuites, StreamRequestTypes } from 'homebridge';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { MapCameraDelegate, type ProcessSpawner } from './cameraDelegate.js';
+import { MapCameraDelegate, type ProcessSpawner, writeFrameWithBackpressure } from './cameraDelegate.js';
 import type { MapRenderer } from './renderer.js';
 import { PersonTracker } from './tracker.js';
 import type { Logger, MapConfig } from './types.js';
@@ -203,5 +203,37 @@ describe('MapCameraDelegate ffmpeg lifecycle', () => {
     expect(() => delegate.handleStreamRequest(startRequest(), callback)).not.toThrow();
     expect(callback).toHaveBeenCalledOnce();
     expect(callback).toHaveBeenCalledWith(spawnError);
+  });
+});
+
+describe('writeFrameWithBackpressure', () => {
+  it('keeps only one frame in flight until stdin drains', () => {
+    let onDrain: (() => void) | undefined;
+    const write = vi.fn(() => false);
+    const stdin = {
+      writable: true,
+      write,
+      once: vi.fn((event: string, listener: () => void) => {
+        if (event === 'drain') {
+          onDrain = listener;
+        }
+        return stdin;
+      }),
+    } as unknown as Writable;
+    const state = { blocked: false };
+    const frame = Buffer.alloc(16);
+
+    writeFrameWithBackpressure(stdin, frame, state);
+    writeFrameWithBackpressure(stdin, frame, state);
+
+    expect(write).toHaveBeenCalledTimes(1);
+    expect(state.blocked).toBe(true);
+
+    onDrain?.();
+    write.mockReturnValue(true);
+    writeFrameWithBackpressure(stdin, frame, state);
+
+    expect(write).toHaveBeenCalledTimes(2);
+    expect(state.blocked).toBe(false);
   });
 });
