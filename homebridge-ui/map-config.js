@@ -24,9 +24,19 @@ const mapConfigSchema = z.object({
     name: z.string().min(1).max(128),
     position: pointSchema,
     headingDegrees: z.number().finite().min(0).lt(360).optional(),
+    fovDegrees: z.number().finite().min(10).max(360).optional(),
   })).max(512),
 }).superRefine((config, context) => {
+  const cameraIds = new Set();
   for (const [index, camera] of config.cameras.entries()) {
+    if (cameraIds.has(camera.id)) {
+      context.addIssue({
+        code: 'custom',
+        path: ['cameras', index, 'id'],
+        message: 'camera id must be unique',
+      });
+    }
+    cameraIds.add(camera.id);
     if (camera.position.x > config.width || camera.position.y > config.height) {
       context.addIssue({
         code: 'custom',

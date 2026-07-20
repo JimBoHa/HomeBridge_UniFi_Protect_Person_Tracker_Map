@@ -40,6 +40,7 @@ describe('Homebridge UI map config loader', () => {
         id: 'front',
         name: 'Front Door',
         position: { x: 40, y: 60 },
+        fovDegrees: 120,
         privateNote: 'do not return',
       }],
       password: 'do not return',
@@ -50,7 +51,7 @@ describe('Homebridge UI map config loader', () => {
     expect(result).toEqual({
       width: 640,
       height: 480,
-      cameras: [{ id: 'front', name: 'Front Door', position: { x: 40, y: 60 } }],
+      cameras: [{ id: 'front', name: 'Front Door', position: { x: 40, y: 60 }, fovDegrees: 120 }],
     });
     expect(configuredMapConfigPath({
       platforms: [{ platform: 'UniFiProtectPersonTrackerMap', mapConfigPath: mapPath }],
@@ -83,5 +84,18 @@ describe('Homebridge UI map config loader', () => {
     await writeFile(mapPath, `${JSON.stringify({ width: 1, height: 1, cameras: [] })}${' '.repeat(MAX_MAP_CONFIG_BYTES)}`);
 
     await expect(loadConfiguredMapConfig(homebridgePath)).rejects.toThrow('1 MB or smaller');
+  });
+
+  it('rejects duplicate camera IDs from path-backed map files', async () => {
+    const { homebridgePath } = await fixture({
+      width: 100,
+      height: 100,
+      cameras: [
+        { id: 'front', name: 'Front', position: { x: 10, y: 10 } },
+        { id: 'front', name: 'Duplicate', position: { x: 20, y: 20 } },
+      ],
+    });
+
+    await expect(loadConfiguredMapConfig(homebridgePath)).rejects.toThrow('required map format');
   });
 });
