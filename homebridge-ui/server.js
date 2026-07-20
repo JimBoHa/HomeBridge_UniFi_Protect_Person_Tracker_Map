@@ -2,6 +2,7 @@ import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { extname, isAbsolute, join, normalize } from 'node:path';
 import { Agent, request } from 'undici';
 import { HomebridgePluginUiServer, RequestError } from '@homebridge/plugin-ui-utils';
+import { loadConfiguredMapConfig, MapConfigLoadError } from './map-config.js';
 
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 
@@ -10,6 +11,7 @@ class TrackerMapUiServer extends HomebridgePluginUiServer {
     super();
     this.onRequest('/save-map-image', this.saveMapImage.bind(this));
     this.onRequest('/load-map-image', this.loadMapImage.bind(this));
+    this.onRequest('/load-map-config', this.loadMapConfig.bind(this));
     this.onRequest('/discover-cameras', this.discoverCameras.bind(this));
     this.ready();
   }
@@ -50,6 +52,18 @@ class TrackerMapUiServer extends HomebridgePluginUiServer {
     }
     const content = await readFile(path);
     return { dataUrl: `data:${mime};base64,${content.toString('base64')}` };
+  }
+
+  async loadMapConfig() {
+    try {
+      // Never accept a caller-supplied path: resolve it from Homebridge's saved plugin config.
+      return { mapConfig: await loadConfiguredMapConfig(this.homebridgeConfigPath) };
+    } catch (error) {
+      const message = error instanceof MapConfigLoadError
+        ? error.message
+        : 'Configured map JSON could not be loaded.';
+      throw new RequestError(message, {});
+    }
   }
 
   async discoverCameras(payload) {

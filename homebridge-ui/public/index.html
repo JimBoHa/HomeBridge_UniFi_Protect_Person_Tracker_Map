@@ -83,6 +83,8 @@
     scaleMode: false,
     scalePoints: [],
     dirty: false,
+    mapDirty: false,
+    mapLoadedFromPath: false,
     stageTimer: null,
     staging: false,
   };
@@ -103,6 +105,10 @@
     state.dirty = true;
     setStatus(message);
     queueStageConfig();
+  };
+  const markMapDirty = (message) => {
+    state.mapDirty = true;
+    markDirty(message);
   };
   const clamp = (value, min, max) => Number.isFinite(value) ? Math.max(min, Math.min(max, value)) : min;
   const sanitizeId = (value) => value.trim().replace(/[^A-Za-z0-9_.:-]/g, '-').slice(0, 128);
@@ -152,12 +158,17 @@
     const pixels = Number.parseFloat(fields.scalePixels.value);
     const distance = Number.parseFloat(fields.scaleDistance.value);
     state.map.scale = pixels > 0 && distance > 0 ? { pixels, distance, unit: fields.scaleUnit.value } : undefined;
-    state.config.mapConfig = {
+    const mapConfig = {
       width: state.map.width,
       height: state.map.height,
       scale: state.map.scale,
       cameras: state.map.cameras.filter((camera) => camera.position),
     };
+    if (state.mapLoadedFromPath && !state.mapDirty) {
+      delete state.config.mapConfig;
+    } else {
+      state.config.mapConfig = mapConfig;
+    }
   }
 
   function buildBlocks() {
@@ -275,9 +286,17 @@
   }
 
   function placeCamera(camera, indexOffset = 0) {
-    camera.position = camera.position ?? nextCameraPosition(indexOffset);
-    camera.headingDegrees ??= 0;
+    let changed = false;
+    if (!camera.position) {
+      camera.position = nextCameraPosition(indexOffset);
+      changed = true;
+    }
+    if (typeof camera.headingDegrees !== 'number') {
+      camera.headingDegrees = 0;
+      changed = true;
+    }
     state.selectedId = camera.id;
+    return changed;
   }
 
   function renderCameraRows() {
@@ -288,7 +307,11 @@
       row.className = `camera-row${camera.id === state.selectedId ? ' selected' : ''}${camera.position ? '' : ' unplaced'}`;
       row.draggable = true;
       row.addEventListener('dragstart', (event) => event.dataTransfer.setData('text/plain', camera.id));
-      row.addEventListener('click', () => { placeCamera(camera); markDirty(); renderCameraRows(); draw(); });
+      row.addEventListener('click', () => {
+        if (placeCamera(camera)) markMapDirty();
+        renderCameraRows();
+        draw();
+      });
 
       const group = document.createElement('div');
       group.className = 'camera-row-fields';
@@ -297,31 +320,35 @@
           const next = sanitizeId(value);
           if (next && !state.map.cameras.some((item) => item !== camera && item.id === next)) {
             if (state.selectedId === camera.id) state.selectedId = next;
-            camera.id = next; markDirty(); renderCameraRows(); draw();
+            camera.id = next; markMapDirty(); renderCameraRows(); draw();
           }
         }),
-        labeledInput('Name', camera.name, (value) => { camera.name = value.trim() || camera.id; markDirty(); draw(); }),
+        labeledInput('Name', camera.name, (value) => { camera.name = value.trim() || camera.id; markMapDirty(); draw(); }),
         labeledNumber('X', camera.position?.x ?? '', (value) => {
           camera.position ??= { x: 0, y: 0 };
-          camera.position.x = clamp(value, 0, state.map.width); markDirty(); draw();
+          camera.position.x = clamp(value, 0, state.map.width); markMapDirty(); draw();
         }),
         labeledNumber('Y', camera.position?.y ?? '', (value) => {
           camera.position ??= { x: 0, y: 0 };
-          camera.position.y = clamp(value, 0, state.map.height); markDirty(); draw();
+          camera.position.y = clamp(value, 0, state.map.height); markMapDirty(); draw();
         }),
         labeledNumber('Heading', camera.headingDegrees ?? '', (value) => {
           camera.headingDegrees = Number.isFinite(value) ? clamp(value, 0, 359.999) : undefined;
-          markDirty(); draw();
+          markMapDirty(); draw();
         }),
       );
 
       const actions = document.createElement('div');
       actions.className = 'tool-row';
-      actions.append(button(camera.position ? 'Select' : 'Place', 'btn-secondary', () => { placeCamera(camera); markDirty(); renderCameraRows(); draw(); }));
+      actions.append(button(camera.position ? 'Select' : 'Place', 'btn-secondary', () => {
+        if (placeCamera(camera)) markMapDirty();
+        renderCameraRows();
+        draw();
+      }));
       actions.append(button('Remove', 'btn-danger', () => {
         state.map.cameras = state.map.cameras.filter((item) => item !== camera);
         if (state.selectedId === camera.id) state.selectedId = state.map.cameras[0]?.id ?? null;
-        markDirty(); renderCameraRows(); draw();
+        markMapDirty(); renderCameraRows(); draw();
       }));
       row.append(group, actions);
       fields.cameraList.append(row);
@@ -447,7 +474,8 @@
     }
     renderCameraRows();
     draw();
-    markDirty(`Discovered ${cameras.length} cameras. Added ${added}. Drag camera dots to exact positions, then use Homebridge Save.`);
+    const message = `Discovered ${cameras.length} cameras. Added ${added}. Drag camera dots to exact positions, then use Homebridge Save.`;
+    if (added > 0) markMapDirty(message); else markDirty(message);
   }
 
   fields.file.addEventListener('change', async () => {
@@ -484,6 +512,7 @@
         camera.position.x = clamp(camera.position.x, 0, state.map.width);
         camera.position.y = clamp(camera.position.y, 0, state.map.height);
       }
+      state.mapDirty = true;
       await stageConfig(isPdf ? 'PDF first page saved. Use the Homebridge Save button at the bottom to persist.' : 'Map image saved. Use the Homebridge Save button at the bottom to persist.');
       draw();
     } catch (error) {
@@ -521,7 +550,7 @@
       headingDegrees: 0,
     });
     state.selectedId = id;
-    markDirty();
+    markMapDirty();
     renderCameraRows();
     draw();
   });
@@ -533,9 +562,14 @@
     setStatus('Scale mode active.');
   });
 
-  for (const input of [fields.name, fields.host, fields.username, fields.password, fields.poll, fields.ignoreTls, fields.scalePixels, fields.scaleDistance, fields.scaleUnit]) {
+  for (const input of [fields.name, fields.host, fields.username, fields.password, fields.poll, fields.ignoreTls]) {
     input.addEventListener('input', () => markDirty());
     input.addEventListener('change', () => markDirty());
+  }
+
+  for (const input of [fields.scalePixels, fields.scaleDistance, fields.scaleUnit]) {
+    input.addEventListener('input', () => markMapDirty());
+    input.addEventListener('change', () => markMapDirty());
   }
 
   fields.deleteConfig.addEventListener('click', async () => {
@@ -546,6 +580,7 @@
     delete state.config.mapImageData;
     delete state.config.mapConfig;
     delete state.config.mapConfigPath;
+    state.mapLoadedFromPath = false;
     fields.scalePixels.value = '';
     fields.scaleDistance.value = '';
     fields.scaleUnit.value = 'ft';
@@ -563,7 +598,7 @@
     camera.position = canvasPoint(event);
     camera.headingDegrees ??= 0;
     state.selectedId = camera.id;
-    markDirty();
+    markMapDirty();
     renderCameraRows();
     draw();
   });
@@ -599,7 +634,7 @@
     } else {
       camera.headingDegrees = (Math.atan2(point.y - camera.position.y, point.x - camera.position.x) * 180 / Math.PI + 360) % 360;
     }
-    markDirty();
+    markMapDirty();
     draw();
   });
 
@@ -621,7 +656,7 @@
         state.scaleMode = false;
         state.scalePoints = [];
         fields.scaleHint.textContent = 'Enter real distance for the measured pixel span, then Save.';
-        markDirty('Scale measured. Enter real distance and Save.');
+        markMapDirty('Scale measured. Enter real distance and Save.');
       }
       draw();
     }
@@ -632,7 +667,18 @@
       homebridge.showSpinner();
       state.blocks = await homebridge.getPluginConfig();
       state.config = currentBlock();
-      state.map = structuredClone(state.config.mapConfig ?? DEFAULT_MAP);
+      if (state.config.mapConfig) {
+        state.map = structuredClone(state.config.mapConfig);
+      } else if (state.config.mapConfigPath) {
+        const loaded = await withTimeout(
+          homebridge.request('/load-map-config'),
+          'Timed out while loading configured map JSON.',
+        );
+        state.map = structuredClone(loaded.mapConfig);
+        state.mapLoadedFromPath = true;
+      } else {
+        state.map = structuredClone(DEFAULT_MAP);
+      }
       state.map.cameras = Array.isArray(state.map.cameras) ? state.map.cameras : [];
       state.selectedId = state.map.cameras[0]?.id ?? null;
       if (state.config.mapImageData) {
