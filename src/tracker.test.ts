@@ -79,6 +79,23 @@ describe('PersonTracker', () => {
     expect(colors.size).toBe(0);
   });
 
+  it('reuses the first available color without colliding with active people', () => {
+    let now = 1_000;
+    const tracker = new PersonTracker(map, 100, () => now);
+    const expired = tracker.ingest({ personId: 'expired', cameraId: 'front', timestamp: now });
+
+    now = 1_050;
+    const active = tracker.ingest({ personId: 'active', cameraId: 'front', timestamp: now });
+    now = 1_110;
+    expect(tracker.snapshot().people.map((person) => person.personId)).toEqual(['active']);
+
+    const newcomer = tracker.ingest({ personId: 'newcomer', cameraId: 'front', timestamp: now });
+    const activeColors = tracker.snapshot().people.map((person) => person.color);
+    expect(newcomer.color).toBe(expired.color);
+    expect(newcomer.color).not.toBe(active.color);
+    expect(new Set(activeColors).size).toBe(activeColors.length);
+  });
+
   it('rejects unknown cameras', () => {
     const tracker = new PersonTracker(map, 60_000);
     expect(() => tracker.ingest({ personId: 'p1', cameraId: 'missing', timestamp: 1 })).toThrow('Unknown camera id');

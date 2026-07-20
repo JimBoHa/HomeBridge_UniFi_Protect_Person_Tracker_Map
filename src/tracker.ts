@@ -137,7 +137,8 @@ export class PersonTracker {
       return existing;
     }
 
-    const color = palette[this.colors.size % palette.length];
+    const usedColors = new Set(this.colors.values());
+    const color = palette.find((candidate) => !usedColors.has(candidate)) ?? palette[this.colors.size % palette.length];
     this.colors.set(personId, color);
     return color;
   }
