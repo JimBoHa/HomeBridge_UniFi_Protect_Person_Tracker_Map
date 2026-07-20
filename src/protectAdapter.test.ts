@@ -165,7 +165,7 @@ describe('extractPersonEvents', () => {
       adapter.start();
       await vi.waitFor(() => expect(sunk).toHaveLength(1));
     } finally {
-      adapter.stop();
+      await adapter.stop();
       vi.unstubAllGlobals();
       await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
     }
@@ -198,8 +198,116 @@ describe('extractPersonEvents', () => {
     expect(pollUrl.searchParams.get('type')).toBe('smartDetectZone');
     expect(pollUrl.searchParams.get('smartDetectTypes')).toBe('person');
     expect(pollUrl.searchParams.get('limit')).toBe('1000');
+    expect(pollUrl.searchParams.get('offset')).toBe('0');
+    expect(pollUrl.searchParams.get('orderBy')).toBe('start');
+    expect(pollUrl.searchParams.get('orderDirection')).toBe('ASC');
     expect(cancelLoginBody).toHaveBeenCalledOnce();
     await adapter.stop();
+  });
+
+  it('overlaps the cursor so delayed events older than the latest result are not skipped', async () => {
+    const now = 20_000_020_000;
+    const delayedTimestamp = now - 5_000;
+    const newerTimestamp = now - 1_000;
+    vi.useFakeTimers({ now });
+    const sunk: ProtectPersonEvent[] = [];
+    const fetchMock = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(mockResponse({}, { 'set-cookie': 'TOKEN=abc; Path=/' }))
+      .mockResolvedValueOnce(mockResponse({
+        events: [{ type: 'person', personId: 'newer', cameraId: 'front', timestamp: newerTimestamp }],
+      }))
+      .mockResolvedValueOnce(mockResponse({
+        events: [
+          { type: 'person', personId: 'delayed', cameraId: 'front', timestamp: delayedTimestamp },
+          { type: 'person', personId: 'newer', cameraId: 'front', timestamp: newerTimestamp },
+        ],
+      }));
+    const adapter = new UniFiProtectAdapter({
+      host: 'protect.local',
+      username: 'user',
+      password: 'pass',
+      pollSeconds: 2,
+    }, (event) => sunk.push(event), logger, fetchMock, 10_000);
+
+    try {
+      adapter.start();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(sunk).toEqual([expect.objectContaining({ personId: 'newer', timestamp: newerTimestamp })]);
+      await vi.advanceTimersByTimeAsync(2_000);
+
+      const firstPoll = new URL(String(fetchMock.mock.calls[1]?.[0]));
+      const secondPoll = new URL(String(fetchMock.mock.calls[2]?.[0]));
+      expect(Number(secondPoll.searchParams.get('start'))).toBeLessThanOrEqual(delayedTimestamp);
+      expect(Number(secondPoll.searchParams.get('start'))).toBeGreaterThanOrEqual(Number(firstPoll.searchParams.get('start')));
+      expect(sunk).toEqual([
+        expect.objectContaining({ personId: 'newer', timestamp: newerTimestamp }),
+        expect.objectContaining({ personId: 'delayed', timestamp: delayedTimestamp }),
+      ]);
+    } finally {
+      await adapter.stop();
+      vi.useRealTimers();
+    }
+  });
+
+  it('paginates capped time ranges before advancing the event cursor', async () => {
+    const now = 20_000_020_000;
+    const initialLookbackMs = 2_000_000;
+    const firstStart = now - initialLookbackMs + 1;
+    vi.useFakeTimers({ now });
+    const sunk: ProtectPersonEvent[] = [];
+    const eventUrls: URL[] = [];
+    const events = (start: number, count: number, prefix: string) => Array.from({ length: count }, (_, index) => ({
+      type: 'person',
+      personId: `${prefix}-${index}`,
+      cameraId: 'front',
+      timestamp: start + index * 1000,
+    }));
+    const fetchMock = vi.fn<typeof fetch>(async (input) => {
+      const url = new URL(String(input));
+      if (url.pathname === '/api/auth/login') {
+        return mockResponse({}, { 'set-cookie': 'TOKEN=abc; Path=/' });
+      }
+
+      eventUrls.push(url);
+      const start = Number(url.searchParams.get('start'));
+      const end = Number(url.searchParams.get('end'));
+      const offset = Number(url.searchParams.get('offset'));
+      if (start === firstStart && end === now && offset === 0) {
+        return mockResponse(events(start, 1000, 'first'));
+      }
+      if (start === firstStart && end === now && offset === 1000) {
+        return mockResponse({ data: events(start + offset * 1000, 200, 'second') });
+      }
+      return mockResponse([]);
+    });
+    const adapter = new UniFiProtectAdapter({
+      host: 'protect.local',
+      username: 'user',
+      password: 'pass',
+      pollSeconds: 2,
+    }, (event) => sunk.push(event), logger, fetchMock, initialLookbackMs);
+
+    try {
+      adapter.start();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(sunk).toHaveLength(1200);
+      await vi.advanceTimersByTimeAsync(2_000);
+
+      expect(eventUrls.slice(0, 2).map((url) => [
+        Number(url.searchParams.get('start')),
+        Number(url.searchParams.get('end')),
+        Number(url.searchParams.get('offset')),
+      ])).toEqual([
+        [firstStart, now, 0],
+        [firstStart, now, 1000],
+      ]);
+      expect(eventUrls[2]?.searchParams.get('start')).toBe(String(firstStart + 299_001));
+      expect(eventUrls[2]?.searchParams.get('offset')).toBe('0');
+      expect(sunk).toHaveLength(1200);
+    } finally {
+      await adapter.stop();
+      vi.useRealTimers();
+    }
   });
 
   it('waits for a poll to finish before scheduling the next one', async () => {
