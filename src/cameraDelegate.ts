@@ -172,7 +172,7 @@ export class MapCameraDelegate implements CameraStreamingDelegate {
       }
     };
     writeFrame();
-    session.frameTimer = setInterval(writeFrame, Math.floor(1000 / fps));
+    session.frameTimer = setInterval(writeFrame, frameIntervalMs(fps));
     callback();
   }
 
@@ -220,6 +220,10 @@ function randomSsrc(): number {
 
 function frameCacheKey(width: number, height: number): string {
   return `${width}x${height}`;
+}
+
+export function frameIntervalMs(fps: number): number {
+  return Math.floor(1000 / fps);
 }
 
 function resolveFfmpegPath(ffmpegPath: string): string {
