@@ -110,11 +110,11 @@ export class MapRenderer {
   }
 
   private drawFovWedge(ctx: CanvasContext, camera: CameraPlacement, snapshot: TrackerSnapshot): void {
-    if (typeof camera.headingDegrees !== 'number') {
+    if (typeof camera.headingDegrees !== 'number' || typeof camera.fovDegrees !== 'number') {
       return;
     }
 
-    const fov = Math.min(360, camera.fovDegrees ?? 90);
+    const fov = Math.min(360, camera.fovDegrees);
     const radius = pixelsForFeet(snapshot, 15) ?? 60;
     const startDegrees = camera.headingDegrees - fov / 2;
     const stepCount = Math.max(8, Math.ceil(fov / 5));

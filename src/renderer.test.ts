@@ -50,6 +50,23 @@ describe('MapRenderer', () => {
     });
     expect(png.subarray(0, 8).toString('hex')).toBe('89504e470d0a1a0a');
   });
+
+  it('renders a coverage wedge only when field of view is explicitly configured', async () => {
+    const renderer = new MapRenderer();
+    const snapshot = (camera: TrackerSnapshot['map']['cameras'][number]): TrackerSnapshot => ({
+      generatedAt: Date.parse('2026-05-24T12:00:00.000Z'),
+      map: { width: 160, height: 100, cameras: [camera] },
+      people: [],
+    });
+    const camera = { id: 'front', name: 'Front', position: { x: 80, y: 40 } };
+
+    const withoutHeading = await renderer.renderRawRgba(snapshot(camera), 160, 100);
+    const legacyHeading = await renderer.renderRawRgba(snapshot({ ...camera, headingDegrees: 90 }), 160, 100);
+    const explicitFov = await renderer.renderRawRgba(snapshot({ ...camera, headingDegrees: 90, fovDegrees: 120 }), 160, 100);
+
+    expect(legacyHeading).toEqual(withoutHeading);
+    expect(explicitFov).not.toEqual(legacyHeading);
+  });
 });
 
 async function makePngDataUrl(): Promise<string> {

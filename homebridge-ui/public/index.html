@@ -226,6 +226,7 @@
     for (const camera of state.map.cameras) {
       if (!camera.position) continue;
       const selected = camera.id === state.selectedId;
+      drawFovWedge(camera, selected);
       ctx.fillStyle = selected ? '#dc2626' : '#1d4ed8';
       ctx.beginPath();
       ctx.arc(camera.position.x, camera.position.y, selected ? 11 : 9, 0, Math.PI * 2);
@@ -242,6 +243,23 @@
       ctx.arc(state.scalePoints[0].x, state.scalePoints[0].y, 6, 0, Math.PI * 2);
       ctx.fill();
     }
+  }
+
+  function drawFovWedge(camera, selected) {
+    if (typeof camera.headingDegrees !== 'number' || typeof camera.fovDegrees !== 'number') return;
+    const fov = clamp(camera.fovDegrees, 10, 360);
+    const radius = 60;
+    const startDegrees = camera.headingDegrees - fov / 2;
+    const stepCount = Math.max(8, Math.ceil(fov / 5));
+    ctx.fillStyle = selected ? 'rgba(220, 38, 38, 0.14)' : 'rgba(29, 78, 216, 0.12)';
+    ctx.beginPath();
+    ctx.moveTo(camera.position.x, camera.position.y);
+    for (let step = 0; step <= stepCount; step += 1) {
+      const radians = (startDegrees + (fov * step) / stepCount) * Math.PI / 180;
+      ctx.lineTo(camera.position.x + Math.cos(radians) * radius, camera.position.y + Math.sin(radians) * radius);
+    }
+    ctx.closePath();
+    ctx.fill();
   }
 
   function drawHeading(camera, color) {
@@ -314,7 +332,7 @@
           markDirty(); draw();
         }),
         labeledNumber('FOV °', camera.fovDegrees ?? '', (value) => {
-          camera.fovDegrees = Number.isFinite(value) ? clamp(value, 10, 360) : undefined;
+          if (Number.isFinite(value)) camera.fovDegrees = clamp(value, 10, 360); else delete camera.fovDegrees;
           markDirty(); draw();
         }),
       );
