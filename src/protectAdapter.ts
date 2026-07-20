@@ -3,10 +3,22 @@ import { Agent } from 'undici';
 
 export type ProtectEventSink = (event: ProtectPersonEvent) => void;
 
+const EVENT_PAGE_LIMIT = 1000;
+const MAX_EVENT_PAGES = 64;
+const EVENT_CURSOR_OVERLAP_MS = 15 * 60 * 1000;
+
+type ProtectEventBatch = {
+  events: ProtectPersonEvent[];
+  latestTimestamp?: number;
+};
+
 export class UniFiProtectAdapter {
   private cookie = '';
   private timer?: NodeJS.Timeout;
   private lastEvent: number;
+  private readonly eventQueryFloor: number;
+  private cursorAdvanced = false;
+  private readonly recentEvents = new Map<string, number>();
   private readonly tlsAgent?: Agent;
 
   public constructor(
@@ -18,6 +30,7 @@ export class UniFiProtectAdapter {
   ) {
     this.tlsAgent = config?.ignoreTls ? new Agent({ connect: { rejectUnauthorized: false } }) : undefined;
     this.lastEvent = Date.now() - Math.max(10_000, initialLookbackMs);
+    this.eventQueryFloor = this.lastEvent + 1;
   }
 
   public start(): void {
@@ -44,26 +57,74 @@ export class UniFiProtectAdapter {
     try {
       await this.ensureLogin();
       const end = Date.now();
-      const query = new URLSearchParams({
-        start: String(this.lastEvent + 1),
-        end: String(end),
-        limit: '1000',
-        type: 'smartDetectZone',
-        smartDetectTypes: 'person',
-      });
-      const eventsPayload = await this.requestJson(`/proxy/protect/api/events?${query.toString()}`);
-      const events = extractPersonEvents(eventsPayload, this.lastEvent);
+      const start = this.cursorAdvanced
+        ? Math.max(this.eventQueryFloor, this.lastEvent - EVENT_CURSOR_OVERLAP_MS + 1)
+        : this.eventQueryFloor;
+      const batch = await this.fetchEventRange(start, end);
+      const events = dedupeEvents(batch.events)
+        .sort((left, right) => left.timestamp - right.timestamp)
+        .filter((event) => !this.recentEvents.has(eventFingerprint(event)));
       if (events.length > 0) {
         this.logger.info(`UniFi Protect person events found: ${events.length}`);
       }
       for (const event of events) {
-        this.lastEvent = Math.max(this.lastEvent, event.timestamp);
         this.sink(event);
+        this.recentEvents.set(eventFingerprint(event), batch.latestTimestamp ?? end);
       }
-      this.lastEvent = Math.max(this.lastEvent, end - 1000);
+      if (batch.latestTimestamp !== undefined) {
+        this.lastEvent = Math.max(this.lastEvent, batch.latestTimestamp);
+        this.cursorAdvanced = true;
+        this.pruneRecentEvents();
+      }
     } catch (error) {
       this.logger.warn(`UniFi Protect poll failed: ${error instanceof Error ? error.message : String(error)}`);
     }
+  }
+
+  private pruneRecentEvents(): void {
+    const cutoff = this.lastEvent - EVENT_CURSOR_OVERLAP_MS;
+    for (const [fingerprint, cursorTimestamp] of this.recentEvents) {
+      if (cursorTimestamp < cutoff) {
+        this.recentEvents.delete(fingerprint);
+      }
+    }
+  }
+
+  private async fetchEventRange(start: number, end: number): Promise<ProtectEventBatch> {
+    if (start > end) {
+      return { events: [] };
+    }
+
+    const batch: ProtectEventBatch = { events: [] };
+    for (let page = 0; page < MAX_EVENT_PAGES; page += 1) {
+      const payload = await this.requestEventRange(start, end, page * EVENT_PAGE_LIMIT);
+      const records = protectEventRecords(payload);
+      const events = extractPersonEvents(payload, start - 1);
+      batch.events.push(...events);
+      batch.latestTimestamp = maxTimestamp(
+        batch.latestTimestamp,
+        latestProtectEventTimestamp(records) ?? latestPersonEventTimestamp(events),
+      );
+      if (records.length < EVENT_PAGE_LIMIT) {
+        return batch;
+      }
+    }
+
+    throw new Error(`Protect event backlog exceeded ${MAX_EVENT_PAGES * EVENT_PAGE_LIMIT} events; refusing to advance cursor`);
+  }
+
+  private async requestEventRange(start: number, end: number, offset: number): Promise<unknown> {
+    const query = new URLSearchParams({
+      start: String(start),
+      end: String(end),
+      limit: String(EVENT_PAGE_LIMIT),
+      offset: String(offset),
+      orderBy: 'start',
+      orderDirection: 'ASC',
+      type: 'smartDetectZone',
+      smartDetectTypes: 'person',
+    });
+    return this.requestJson(`/proxy/protect/api/events?${query.toString()}`);
   }
 
   private async ensureLogin(): Promise<void> {
@@ -191,6 +252,57 @@ function dedupeEvents(events: ProtectPersonEvent[]): ProtectPersonEvent[] {
     seen.add(key);
     return true;
   });
+}
+
+function protectEventRecords(payload: unknown): unknown[] {
+  if (Array.isArray(payload)) {
+    return payload;
+  }
+  if (isRecord(payload) && Array.isArray(payload.events)) {
+    return payload.events;
+  }
+  if (isRecord(payload) && Array.isArray(payload.data)) {
+    return payload.data;
+  }
+  return [];
+}
+
+function latestProtectEventTimestamp(records: unknown[]): number | undefined {
+  let latest: number | undefined;
+  for (const record of records) {
+    if (!isRecord(record)) {
+      continue;
+    }
+    const timestamp = timestampValue(record.start ?? record.timestamp ?? record.createdAt ?? record.end);
+    latest = maxTimestamp(latest, timestamp);
+  }
+  return latest;
+}
+
+function latestPersonEventTimestamp(events: ProtectPersonEvent[]): number | undefined {
+  return events.reduce<number | undefined>((latest, event) => maxTimestamp(latest, event.timestamp), undefined);
+}
+
+function maxTimestamp(left: number | undefined, right: number | undefined): number | undefined {
+  if (left === undefined) {
+    return right;
+  }
+  if (right === undefined) {
+    return left;
+  }
+  return Math.max(left, right);
+}
+
+function eventFingerprint(event: ProtectPersonEvent): string {
+  return JSON.stringify([
+    event.personId,
+    event.name ?? null,
+    event.cameraId,
+    event.timestamp,
+    event.confidence ?? null,
+    event.directionDegrees ?? null,
+    event.path ?? null,
+  ]);
 }
 
 function arrayIncludesPerson(value: unknown): boolean {
