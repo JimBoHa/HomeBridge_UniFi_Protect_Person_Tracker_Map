@@ -3,11 +3,16 @@ import { Agent } from 'undici';
 
 export type ProtectEventSink = (event: ProtectPersonEvent) => void;
 
+const REQUEST_TIMEOUT_MS = 30_000;
+
 export class UniFiProtectAdapter {
   private cookie = '';
   private timer?: NodeJS.Timeout;
+  private activePoll?: Promise<void>;
+  private activeRequest?: AbortController;
   private lastEvent: number;
-  private readonly tlsAgent?: Agent;
+  private tlsAgent?: Agent;
+  private running = false;
 
   public constructor(
     private readonly config: ProtectConfig | undefined,
@@ -16,7 +21,6 @@ export class UniFiProtectAdapter {
     private readonly fetchImpl: typeof fetch = fetch,
     initialLookbackMs = 7 * 24 * 60 * 60 * 1000,
   ) {
-    this.tlsAgent = config?.ignoreTls ? new Agent({ connect: { rejectUnauthorized: false } }) : undefined;
     this.lastEvent = Date.now() - Math.max(10_000, initialLookbackMs);
   }
 
@@ -26,18 +30,56 @@ export class UniFiProtectAdapter {
       return;
     }
 
-    const pollMs = Math.max(2, this.config.pollSeconds ?? 5) * 1000;
-    this.timer = setInterval(() => {
-      void this.poll();
-    }, pollMs);
-    void this.poll();
+    if (this.running) {
+      return;
+    }
+
+    this.running = true;
+    this.tlsAgent = this.config.ignoreTls ? new Agent({ connect: { rejectUnauthorized: false } }) : undefined;
+    this.runPoll();
   }
 
-  public stop(): void {
+  public async stop(): Promise<void> {
+    this.running = false;
     if (this.timer) {
-      clearInterval(this.timer);
+      clearTimeout(this.timer);
       this.timer = undefined;
     }
+
+    this.activeRequest?.abort(abortError('Protect polling stopped'));
+    await this.activePoll;
+
+    const tlsAgent = this.tlsAgent;
+    this.tlsAgent = undefined;
+    this.cookie = '';
+    await tlsAgent?.close();
+  }
+
+  private runPoll(): void {
+    if (!this.running || this.activePoll) {
+      return;
+    }
+
+    const activePoll = this.poll();
+    this.activePoll = activePoll;
+    void activePoll.finally(() => {
+      if (this.activePoll === activePoll) {
+        this.activePoll = undefined;
+      }
+      this.schedulePoll();
+    });
+  }
+
+  private schedulePoll(): void {
+    if (!this.running) {
+      return;
+    }
+
+    const pollMs = Math.max(2, this.config?.pollSeconds ?? 5) * 1000;
+    this.timer = setTimeout(() => {
+      this.timer = undefined;
+      this.runPoll();
+    }, pollMs);
   }
 
   private async poll(): Promise<void> {
@@ -62,6 +104,9 @@ export class UniFiProtectAdapter {
       }
       this.lastEvent = Math.max(this.lastEvent, end - 1000);
     } catch (error) {
+      if (!this.running) {
+        return;
+      }
       this.logger.warn(`UniFi Protect poll failed: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
@@ -70,35 +115,71 @@ export class UniFiProtectAdapter {
     if (this.cookie) {
       return;
     }
-    const response = await this.fetchImpl(this.url('/api/auth/login'), {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ username: this.config?.username, password: this.config?.password }),
-      dispatcher: this.tlsAgent,
-    } as FetchOptions);
-    if (!response.ok) {
-      throw new Error(`login failed: ${response.status}`);
+    const response = await this.withRequestTimeout((signal) => this.fetchImpl(
+      this.url('/api/auth/login'),
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ username: this.config?.username, password: this.config?.password }),
+        dispatcher: this.tlsAgent,
+        signal,
+      } as FetchOptions,
+    ));
+    try {
+      if (!response.ok) {
+        throw new Error(`login failed: ${response.status}`);
+      }
+      const cookie = response.headers.get('set-cookie');
+      if (!cookie) {
+        throw new Error('login response did not include cookie');
+      }
+      this.cookie = cookie.split(';')[0] ?? '';
+    } finally {
+      await discardResponseBody(response);
     }
-    const cookie = response.headers.get('set-cookie');
-    if (!cookie) {
-      throw new Error('login response did not include cookie');
-    }
-    this.cookie = cookie.split(';')[0] ?? '';
   }
 
   private async requestJson(path: string): Promise<unknown> {
-    const response = await this.fetchImpl(this.url(path), {
-      headers: { cookie: this.cookie },
-      dispatcher: this.tlsAgent,
-    } as FetchOptions);
-    if (response.status === 401 || response.status === 403) {
-      this.cookie = '';
-      throw new Error('Protect session expired');
+    return this.withRequestTimeout(async (signal) => {
+      const response = await this.fetchImpl(this.url(path), {
+        headers: { cookie: this.cookie },
+        dispatcher: this.tlsAgent,
+        signal,
+      } as FetchOptions);
+      if (response.status === 401 || response.status === 403) {
+        this.cookie = '';
+        await discardResponseBody(response);
+        throw new Error('Protect session expired');
+      }
+      if (!response.ok) {
+        await discardResponseBody(response);
+        throw new Error(`Protect request failed: ${response.status}`);
+      }
+      return response.json() as Promise<unknown>;
+    });
+  }
+
+  private async withRequestTimeout<T>(request: (signal: AbortSignal) => Promise<T>): Promise<T> {
+    if (!this.running) {
+      throw abortError('Protect polling stopped');
     }
-    if (!response.ok) {
-      throw new Error(`Protect request failed: ${response.status}`);
+
+    const controller = new AbortController();
+    this.activeRequest = controller;
+    const timeout = setTimeout(() => {
+      const error = new Error(`Protect request timed out after ${REQUEST_TIMEOUT_MS}ms`);
+      error.name = 'TimeoutError';
+      controller.abort(error);
+    }, REQUEST_TIMEOUT_MS);
+
+    try {
+      return await request(controller.signal);
+    } finally {
+      clearTimeout(timeout);
+      if (this.activeRequest === controller) {
+        this.activeRequest = undefined;
+      }
     }
-    return response.json() as Promise<unknown>;
   }
 
   private url(path: string): string {
@@ -118,6 +199,20 @@ export class UniFiProtectAdapter {
 type FetchOptions = RequestInit & {
   dispatcher?: Agent;
 };
+
+function abortError(message: string): Error {
+  const error = new Error(message);
+  error.name = 'AbortError';
+  return error;
+}
+
+async function discardResponseBody(response: Response): Promise<void> {
+  try {
+    await response.body?.cancel();
+  } catch {
+    // The original request result is more useful than a cleanup failure.
+  }
+}
 
 export function extractPersonEvents(payload: unknown, afterTimestamp = 0): ProtectPersonEvent[] {
   const events: ProtectPersonEvent[] = [];

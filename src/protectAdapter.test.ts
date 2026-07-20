@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { Agent } from 'undici';
 import { extractPersonEvents, UniFiProtectAdapter } from './protectAdapter.js';
 import type { Logger, ProtectPersonEvent } from './types.js';
 
@@ -8,6 +9,16 @@ const logger: Logger = {
   warn: () => undefined,
   error: () => undefined,
 };
+
+function mockResponse(body: unknown, headers?: HeadersInit, cancel?: () => Promise<void>): Response {
+  return {
+    ok: true,
+    status: 200,
+    headers: new Headers(headers),
+    body: cancel ? { cancel } : null,
+    json: async () => body,
+  } as unknown as Response;
+}
 
 describe('extractPersonEvents', () => {
   it('extracts facial/person detections from nested Protect-like payloads', () => {
@@ -106,23 +117,20 @@ describe('extractPersonEvents', () => {
     ]);
   });
 
-  it('logs and skips polling when credentials are absent', () => {
+  it('logs and skips polling when credentials are absent', async () => {
     const warn = vi.fn();
     const adapter = new UniFiProtectAdapter(undefined, () => undefined, { ...logger, warn });
     adapter.start();
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('credentials not configured'));
-    adapter.stop();
+    await adapter.stop();
   });
 
   it('logs in and sinks parsed person events while polling', async () => {
-    vi.useFakeTimers();
     const sunk: ProtectPersonEvent[] = [];
+    const cancelLoginBody = vi.fn().mockResolvedValue(undefined);
     const fetchMock = vi.fn<typeof fetch>()
-      .mockResolvedValueOnce(new Response('{}', {
-        status: 200,
-        headers: { 'set-cookie': 'TOKEN=abc; Path=/' },
-      }))
-      .mockResolvedValueOnce(Response.json({
+      .mockResolvedValueOnce(mockResponse({}, { 'set-cookie': 'TOKEN=abc; Path=/' }, cancelLoginBody))
+      .mockResolvedValueOnce(mockResponse({
         events: [{ type: 'person', personId: 'p1', cameraId: 'front', timestamp: Date.now() }],
       }));
 
@@ -133,7 +141,6 @@ describe('extractPersonEvents', () => {
       pollSeconds: 2,
     }, (event) => sunk.push(event), logger, fetchMock);
     adapter.start();
-    await vi.runOnlyPendingTimersAsync();
     await vi.waitFor(() => expect(sunk).toHaveLength(1));
     expect(fetchMock.mock.calls[0]?.[0]).toBe('https://protect.local/api/auth/login');
     const pollUrl = new URL(String(fetchMock.mock.calls[1]?.[0]));
@@ -141,7 +148,97 @@ describe('extractPersonEvents', () => {
     expect(pollUrl.searchParams.get('type')).toBe('smartDetectZone');
     expect(pollUrl.searchParams.get('smartDetectTypes')).toBe('person');
     expect(pollUrl.searchParams.get('limit')).toBe('1000');
-    adapter.stop();
-    vi.useRealTimers();
+    expect(cancelLoginBody).toHaveBeenCalledOnce();
+    await adapter.stop();
+  });
+
+  it('waits for a poll to finish before scheduling the next one', async () => {
+    vi.useFakeTimers();
+    let resolveEvents: ((response: Response) => void) | undefined;
+    const pendingEvents = new Promise<Response>((resolve) => {
+      resolveEvents = resolve;
+    });
+    const fetchMock = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(mockResponse({}, { 'set-cookie': 'TOKEN=abc; Path=/' }))
+      .mockReturnValueOnce(pendingEvents)
+      .mockResolvedValueOnce(mockResponse({ events: [] }));
+    const adapter = new UniFiProtectAdapter({
+      host: 'protect.local',
+      username: 'user',
+      password: 'pass',
+      pollSeconds: 2,
+    }, () => undefined, logger, fetchMock);
+
+    try {
+      adapter.start();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+
+      resolveEvents?.(mockResponse({ events: [] }));
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(1_999);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+    } finally {
+      await adapter.stop();
+      vi.useRealTimers();
+    }
+  });
+
+  it('aborts requests that exceed the timeout', async () => {
+    vi.useFakeTimers();
+    const warn = vi.fn();
+    let requestSignal: AbortSignal | null | undefined;
+    const fetchMock = vi.fn<typeof fetch>((_input, init) => new Promise<Response>((_resolve, reject) => {
+      requestSignal = init?.signal;
+      requestSignal?.addEventListener('abort', () => reject(requestSignal?.reason), { once: true });
+    }));
+    const adapter = new UniFiProtectAdapter({
+      host: 'protect.local',
+      username: 'user',
+      password: 'pass',
+      pollSeconds: 2,
+    }, () => undefined, { ...logger, warn }, fetchMock);
+
+    try {
+      adapter.start();
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(requestSignal?.aborted).toBe(true);
+      expect(warn).toHaveBeenCalledWith('UniFi Protect poll failed: Protect request timed out after 30000ms');
+    } finally {
+      await adapter.stop();
+      vi.useRealTimers();
+    }
+  });
+
+  it('aborts an active poll and closes its TLS agent on stop', async () => {
+    const warn = vi.fn();
+    const close = vi.spyOn(Agent.prototype, 'close');
+    let requestSignal: AbortSignal | null | undefined;
+    const fetchMock = vi.fn<typeof fetch>((_input, init) => new Promise<Response>((_resolve, reject) => {
+      requestSignal = init?.signal;
+      requestSignal?.addEventListener('abort', () => reject(requestSignal?.reason), { once: true });
+    }));
+    const adapter = new UniFiProtectAdapter({
+      host: 'protect.local',
+      username: 'user',
+      password: 'pass',
+      pollSeconds: 2,
+      ignoreTls: true,
+    }, () => undefined, { ...logger, warn }, fetchMock);
+
+    try {
+      adapter.start();
+      await adapter.stop();
+      expect(requestSignal?.aborted).toBe(true);
+      expect(close.mock.calls.filter((args) => args.length === 0)).toHaveLength(1);
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      close.mockRestore();
+    }
   });
 });

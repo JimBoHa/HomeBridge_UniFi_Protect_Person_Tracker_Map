@@ -103,7 +103,7 @@ class UniFiProtectPersonTrackerPlatform implements DynamicPlatformPlugin {
   }
 
   private async shutdown(): Promise<void> {
-    this.protectAdapter?.stop();
+    await this.protectAdapter?.stop();
     await this.httpServer?.stop();
   }
 }
