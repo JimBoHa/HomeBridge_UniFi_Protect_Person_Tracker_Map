@@ -31,18 +31,28 @@ export class TrackerHttpServer {
       void this.handle(request, response);
     });
     this.server = server;
+    const handleRuntimeError = (error: Error): void => {
+      this.logger.error(`Tracker HTTP server error: ${error.message}`);
+    };
     try {
       await new Promise<void>((resolve, reject) => {
-        server.once('error', reject);
-        server.listen(port, host, resolve);
+        const handleBindError = (error: Error): void => {
+          server.removeListener('listening', handleListening);
+          reject(error);
+        };
+        const handleListening = (): void => {
+          server.removeListener('error', handleBindError);
+          server.on('error', handleRuntimeError);
+          resolve();
+        };
+        server.once('error', handleBindError);
+        server.once('listening', handleListening);
+        server.listen(port, host);
       });
     } catch (error) {
       this.server = undefined;
       throw error;
     }
-    server.on('error', (error) => {
-      this.logger.error(`Tracker HTTP server error: ${error.message}`);
-    });
     const address = server.address();
     const actualPort = typeof address === 'object' && address ? address.port : port;
     this.logger.info(`Person tracker map HTTP server listening on ${host}:${actualPort}`);

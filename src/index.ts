@@ -7,29 +7,56 @@ import { UniFiProtectAdapter } from './protectAdapter.js';
 import { MapRenderer } from './renderer.js';
 import { PLATFORM_NAME, PLUGIN_NAME } from './settings.js';
 import { PersonTracker } from './tracker.js';
-import type { PluginConfig } from './types.js';
+import type { Logger, MapConfig, PluginConfig, ProtectConfig, ProtectPersonEvent } from './types.js';
+
+type HttpServerLifecycle = Pick<TrackerHttpServer, 'start' | 'stop'>;
+type ProtectAdapterLifecycle = Pick<UniFiProtectAdapter, 'start' | 'stop'>;
+
+export type PlatformDependencies = {
+  loadMapConfig(configPath?: string, inlineConfig?: MapConfig): Promise<MapConfig>;
+  createHttpServer(tracker: PersonTracker, renderer: MapRenderer, adminToken: string, logger: Logger): HttpServerLifecycle;
+  createProtectAdapter(
+    config: ProtectConfig | undefined,
+    sink: (event: ProtectPersonEvent) => void,
+    logger: Logger,
+    initialLookbackMs: number,
+  ): ProtectAdapterLifecycle;
+};
+
+const defaultDependencies: PlatformDependencies = {
+  loadMapConfig,
+  createHttpServer: (tracker, renderer, adminToken, logger) => new TrackerHttpServer(tracker, renderer, adminToken, logger),
+  createProtectAdapter: (config, sink, logger, initialLookbackMs) => new UniFiProtectAdapter(
+    config,
+    sink,
+    logger,
+    undefined,
+    initialLookbackMs,
+  ),
+};
 
 export default function initializer(api: API): void {
   api.registerPlatform(PLUGIN_NAME, PLATFORM_NAME, UniFiProtectPersonTrackerPlatform);
 }
 
-class UniFiProtectPersonTrackerPlatform implements DynamicPlatformPlugin {
+export class UniFiProtectPersonTrackerPlatform implements DynamicPlatformPlugin {
   private accessory?: PlatformAccessory;
-  private httpServer?: TrackerHttpServer;
-  private protectAdapter?: UniFiProtectAdapter;
+  private httpServer?: HttpServerLifecycle;
+  private protectAdapter?: ProtectAdapterLifecycle;
+  private launchPromise?: Promise<void>;
+  private shutdownRequested = false;
 
   public constructor(
     private readonly log: Logging,
     private readonly rawConfig: PlatformConfig,
     private readonly api: API,
+    private readonly dependencies: PlatformDependencies = defaultDependencies,
   ) {
     this.api.on(APIEvent.DID_FINISH_LAUNCHING, () => {
-      this.launch().catch((error: unknown) => {
-        this.log.error(`Person tracker map failed to start: ${error instanceof Error ? error.message : String(error)}`);
-      });
+      this.startLaunch();
     });
     this.api.on(APIEvent.SHUTDOWN, () => {
-      this.shutdown().catch((error: unknown) => {
+      void this.shutdown().catch((error: unknown) => {
         this.log.warn(`Person tracker map shutdown failed: ${error instanceof Error ? error.message : String(error)}`);
       });
     });
@@ -39,58 +66,89 @@ class UniFiProtectPersonTrackerPlatform implements DynamicPlatformPlugin {
     this.accessory = accessory;
   }
 
-  private async launch(): Promise<void> {
-    const config = resolvePluginConfig(this.rawConfig as PluginConfig);
-    const map = await loadMapConfig(config.mapConfigPath, config.mapConfig);
-    const tracker = new PersonTracker(map, config.peopleTtlSeconds * 1000);
-    const renderer = new MapRenderer({ path: config.mapImagePath, dataUrl: config.mapImageData });
-    const httpServer = new TrackerHttpServer(tracker, renderer, config.adminToken, this.log);
-    const actualPort = await httpServer.start(config.bindHost, config.port);
-    this.httpServer = httpServer;
-
-    const snapshotUrl = `http://${config.bindHost}:${actualPort}/snapshot.png`;
-    const { accessory, isNew } = this.getOrCreateAccessory(config.name);
-    accessory.getService(this.api.hap.Service.AccessoryInformation)
-      ?.setCharacteristic(this.api.hap.Characteristic.Manufacturer, 'JimBoHa')
-      .setCharacteristic(this.api.hap.Characteristic.Model, 'UniFi Protect Person Tracker Map')
-      .setCharacteristic(this.api.hap.Characteristic.SerialNumber, 'person-tracker-map');
-
-    const delegate = new MapCameraDelegate(tracker, renderer, config.ffmpegPath, this.log);
-    accessory.configureController(new this.api.hap.CameraController({
-      cameraStreamCount: 2,
-      delegate,
-      streamingOptions: {
-        supportedCryptoSuites: [SRTPCryptoSuites.AES_CM_128_HMAC_SHA1_80],
-        video: {
-          codec: {
-            profiles: [H264Profile.BASELINE],
-            levels: [H264Level.LEVEL3_1],
-          },
-          resolutions: [
-            [320, 180, 10],
-            [640, 360, 10],
-            [1280, 720, 10],
-          ],
-        },
-      },
-    }));
-    if (isNew) {
-      this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
-    } else {
-      this.api.updatePlatformAccessories([accessory]);
+  private startLaunch(): void {
+    if (this.launchPromise) {
+      return;
     }
+    this.launchPromise = this.launch();
+    void this.launchPromise.catch((error: unknown) => {
+      this.log.error(`Person tracker map failed to start: ${error instanceof Error ? error.message : String(error)}`);
+    });
+  }
 
-    this.protectAdapter = new UniFiProtectAdapter(config.protect, (event) => {
-      try {
-        tracker.ingest(event);
-      } catch (error) {
-        this.log.warn(`Protect event ignored: ${error instanceof Error ? error.message : String(error)}`);
+  private async launch(): Promise<void> {
+    let httpServer: HttpServerLifecycle | undefined;
+    let protectAdapter: ProtectAdapterLifecycle | undefined;
+    let started = false;
+    try {
+      const config = resolvePluginConfig(this.rawConfig as PluginConfig);
+      const map = await this.dependencies.loadMapConfig(config.mapConfigPath, config.mapConfig);
+      if (this.shutdownRequested) {
+        return;
       }
-    }, this.log, undefined, config.peopleTtlSeconds * 1000);
-    this.protectAdapter.start();
 
-    this.log.info(`Map snapshot available at ${snapshotUrl}`);
-    this.log.info('Use Bearer admin token for /events, /state, and /map-config write/read endpoints.');
+      const tracker = new PersonTracker(map, config.peopleTtlSeconds * 1000);
+      const renderer = new MapRenderer({ path: config.mapImagePath, dataUrl: config.mapImageData });
+      httpServer = this.dependencies.createHttpServer(tracker, renderer, config.adminToken, this.log);
+      const actualPort = await httpServer.start(config.bindHost, config.port);
+      if (this.shutdownRequested) {
+        return;
+      }
+
+      const snapshotUrl = `http://${config.bindHost}:${actualPort}/snapshot.png`;
+      const { accessory, isNew } = this.getOrCreateAccessory(config.name);
+      accessory.getService(this.api.hap.Service.AccessoryInformation)
+        ?.setCharacteristic(this.api.hap.Characteristic.Manufacturer, 'JimBoHa')
+        .setCharacteristic(this.api.hap.Characteristic.Model, 'UniFi Protect Person Tracker Map')
+        .setCharacteristic(this.api.hap.Characteristic.SerialNumber, 'person-tracker-map');
+
+      const delegate = new MapCameraDelegate(tracker, renderer, config.ffmpegPath, this.log);
+      accessory.configureController(new this.api.hap.CameraController({
+        cameraStreamCount: 2,
+        delegate,
+        streamingOptions: {
+          supportedCryptoSuites: [SRTPCryptoSuites.AES_CM_128_HMAC_SHA1_80],
+          video: {
+            codec: {
+              profiles: [H264Profile.BASELINE],
+              levels: [H264Level.LEVEL3_1],
+            },
+            resolutions: [
+              [320, 180, 10],
+              [640, 360, 10],
+              [1280, 720, 10],
+            ],
+          },
+        },
+      }));
+      if (isNew) {
+        this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
+      } else {
+        this.api.updatePlatformAccessories([accessory]);
+      }
+
+      protectAdapter = this.dependencies.createProtectAdapter(config.protect, (event) => {
+        try {
+          tracker.ingest(event);
+        } catch (error) {
+          this.log.warn(`Protect event ignored: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }, this.log, config.peopleTtlSeconds * 1000);
+      protectAdapter.start();
+      if (this.shutdownRequested) {
+        return;
+      }
+
+      this.log.info(`Map snapshot available at ${snapshotUrl}`);
+      this.log.info('Use Bearer admin token for /events, /state, and /map-config write/read endpoints.');
+      this.httpServer = httpServer;
+      this.protectAdapter = protectAdapter;
+      started = true;
+    } finally {
+      if (!started) {
+        await this.cleanupPartialResources(protectAdapter, httpServer);
+      }
+    }
   }
 
   private getOrCreateAccessory(name: string): { accessory: PlatformAccessory; isNew: boolean } {
@@ -107,7 +165,47 @@ class UniFiProtectPersonTrackerPlatform implements DynamicPlatformPlugin {
   }
 
   private async shutdown(): Promise<void> {
-    await this.protectAdapter?.stop();
-    await this.httpServer?.stop();
+    this.shutdownRequested = true;
+    try {
+      await this.launchPromise;
+    } catch {
+      // Startup failures are logged by startLaunch; shutdown still cleans committed resources.
+    }
+
+    const protectAdapter = this.protectAdapter;
+    const httpServer = this.httpServer;
+    this.protectAdapter = undefined;
+    this.httpServer = undefined;
+
+    let shutdownError: unknown;
+    try {
+      await protectAdapter?.stop();
+    } catch (error) {
+      shutdownError = error;
+    }
+    try {
+      await httpServer?.stop();
+    } catch (error) {
+      shutdownError ??= error;
+    }
+    if (shutdownError) {
+      throw shutdownError;
+    }
+  }
+
+  private async cleanupPartialResources(
+    protectAdapter: ProtectAdapterLifecycle | undefined,
+    httpServer: HttpServerLifecycle | undefined,
+  ): Promise<void> {
+    try {
+      await protectAdapter?.stop();
+    } catch (error) {
+      this.log.warn(`Protect adapter cleanup failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    try {
+      await httpServer?.stop();
+    } catch (error) {
+      this.log.warn(`Tracker HTTP server cleanup failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
 }
