@@ -9,7 +9,7 @@ import type {
 } from 'homebridge';
 import { SRTPCryptoSuites, StreamRequestTypes } from 'homebridge';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { MapCameraDelegate, type ProcessSpawner, writeFrameWithBackpressure } from './cameraDelegate.js';
+import { buildSrtpOutputUrl, MapCameraDelegate, type ProcessSpawner, writeFrameWithBackpressure } from './cameraDelegate.js';
 import type { MapRenderer } from './renderer.js';
 import { PersonTracker } from './tracker.js';
 import type { Logger, MapConfig } from './types.js';
@@ -235,5 +235,13 @@ describe('writeFrameWithBackpressure', () => {
 
     expect(write).toHaveBeenCalledTimes(2);
     expect(state.blocked).toBe(false);
+  });
+});
+
+describe('buildSrtpOutputUrl', () => {
+  it('binds RTCP to the port advertised to HomeKit', () => {
+    expect(buildSrtpOutputUrl('10.0.0.12', 50_000, 41_234, 1_376)).toBe(
+      'srtp://10.0.0.12:50000?rtcpport=50000&localrtcpport=41234&pkt_size=1376',
+    );
   });
 });

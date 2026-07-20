@@ -137,7 +137,7 @@ export class MapCameraDelegate implements CameraStreamingDelegate {
       '-f', 'rtp',
       '-srtp_out_suite', cryptoSuite === SRTPCryptoSuites.AES_CM_128_HMAC_SHA1_80 ? 'AES_CM_128_HMAC_SHA1_80' : 'NONE',
       '-srtp_out_params', srtpParams,
-      `srtp://${session.address}:${session.videoPort}?rtcpport=${session.videoPort}&pkt_size=${request.video.mtu}`,
+      buildSrtpOutputUrl(session.address, session.videoPort, session.localVideoPort, request.video.mtu),
     ];
 
     this.logger.info(`Starting map stream ${width}x${height}@${fps}fps to ${session.address}:${session.videoPort} from ${session.localVideoPort}`);
@@ -315,6 +315,10 @@ function randomSsrc(): number {
 
 function frameCacheKey(width: number, height: number): string {
   return `${width}x${height}`;
+}
+
+export function buildSrtpOutputUrl(address: string, videoPort: number, localRtcpPort: number, mtu: number): string {
+  return `srtp://${address}:${videoPort}?rtcpport=${videoPort}&localrtcpport=${localRtcpPort}&pkt_size=${mtu}`;
 }
 
 function toError(error: unknown): Error {
