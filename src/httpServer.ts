@@ -27,13 +27,23 @@ export class TrackerHttpServer {
   ) {}
 
   public async start(host: string, port: number): Promise<number> {
-    this.server = createServer((request, response) => {
+    const server = createServer((request, response) => {
       void this.handle(request, response);
     });
-    await new Promise<void>((resolve) => {
-      this.server?.listen(port, host, resolve);
+    this.server = server;
+    try {
+      await new Promise<void>((resolve, reject) => {
+        server.once('error', reject);
+        server.listen(port, host, resolve);
+      });
+    } catch (error) {
+      this.server = undefined;
+      throw error;
+    }
+    server.on('error', (error) => {
+      this.logger.error(`Tracker HTTP server error: ${error.message}`);
     });
-    const address = this.server.address();
+    const address = server.address();
     const actualPort = typeof address === 'object' && address ? address.port : port;
     this.logger.info(`Person tracker map HTTP server listening on ${host}:${actualPort}`);
     return actualPort;

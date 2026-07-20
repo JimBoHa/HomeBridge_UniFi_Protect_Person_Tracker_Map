@@ -24,10 +24,14 @@ class UniFiProtectPersonTrackerPlatform implements DynamicPlatformPlugin {
     private readonly api: API,
   ) {
     this.api.on(APIEvent.DID_FINISH_LAUNCHING, () => {
-      void this.launch();
+      this.launch().catch((error: unknown) => {
+        this.log.error(`Person tracker map failed to start: ${error instanceof Error ? error.message : String(error)}`);
+      });
     });
     this.api.on(APIEvent.SHUTDOWN, () => {
-      void this.shutdown();
+      this.shutdown().catch((error: unknown) => {
+        this.log.warn(`Person tracker map shutdown failed: ${error instanceof Error ? error.message : String(error)}`);
+      });
     });
   }
 

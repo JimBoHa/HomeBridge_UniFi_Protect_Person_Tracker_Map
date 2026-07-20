@@ -110,4 +110,14 @@ describe('TrackerHttpServer', () => {
     const missing = await fetch(`http://127.0.0.1:${port}/missing`);
     expect(missing.status).toBe(404);
   });
+
+  it('rejects instead of hanging when the port is already in use', async () => {
+    const tracker = new PersonTracker(map, 60_000);
+    server = new TrackerHttpServer(tracker, new MapRenderer(), 'x'.repeat(32), logger);
+    const port = await server.start('127.0.0.1', 0);
+
+    const second = new TrackerHttpServer(tracker, new MapRenderer(), 'x'.repeat(32), logger);
+    await expect(second.start('127.0.0.1', port)).rejects.toThrow(/EADDRINUSE/);
+    await second.stop();
+  });
 });
