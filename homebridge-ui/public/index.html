@@ -187,7 +187,10 @@
   }
 
   async function stageConfig(message = 'Changes staged. Use the Homebridge Save button at the bottom to persist.') {
-    if (state.staging) return;
+    if (state.staging) {
+      queueStageConfig();
+      return;
+    }
     state.staging = true;
     try {
       state.blocks = await withTimeout(
@@ -196,6 +199,9 @@
         STAGE_TIMEOUT_MS,
       );
       setStatus(message);
+    } catch (error) {
+      setStatus(`Staging failed: ${error.message}`);
+      homebridge.toast.error(error.message, 'Staging failed');
     } finally {
       state.staging = false;
     }
