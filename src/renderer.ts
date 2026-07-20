@@ -113,6 +113,8 @@ export class MapRenderer {
     const dotOutlineRadius = dotRadius + Math.max(2, dotRadius * 0.18);
     for (const person of snapshot.people) {
       this.drawTrail(ctx, person);
+    }
+    for (const person of snapshot.people) {
       ctx.fillStyle = '#ffffff';
       ctx.beginPath();
       ctx.arc(person.position.x, person.position.y, dotOutlineRadius, 0, Math.PI * 2);

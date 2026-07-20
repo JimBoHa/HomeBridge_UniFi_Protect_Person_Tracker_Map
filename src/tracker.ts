@@ -15,6 +15,7 @@ const palette = [
 
 const DEFAULT_CAMERA_PROJECTION_FEET = 10;
 const FOV_WIDTH_DEGREES = 90;
+const TRAIL_MAX_GAP_MS = 15 * 60 * 1000;
 
 export class PersonTracker {
   private readonly people = new Map<string, PersonPosition>();
@@ -24,7 +25,7 @@ export class PersonTracker {
     private map: MapConfig,
     private readonly ttlMs: number,
     private readonly now: () => number = Date.now,
-    private readonly trailPoints = 10,
+    private readonly trailPoints = 0,
   ) {}
 
   public setMap(map: MapConfig): void {
@@ -47,7 +48,7 @@ export class PersonTracker {
       directionDegrees,
       sourceCameraId: event.cameraId,
       confidence: event.confidence,
-      trail: this.buildTrail(previous),
+      trail: this.buildTrail(previous, this.clamp(position), event.timestamp),
     };
 
     this.people.set(event.personId, person);
@@ -114,16 +115,19 @@ export class PersonTracker {
     });
   }
 
-  private buildTrail(previous?: PersonPosition): Point[] | undefined {
+  private buildTrail(previous: PersonPosition | undefined, position: Point, timestamp: number): Point[] | undefined {
     if (this.trailPoints <= 0) {
       return undefined;
     }
-    if (!previous) {
+    if (!previous || timestamp - previous.timestamp > TRAIL_MAX_GAP_MS) {
       return [];
     }
     const trail = [...(previous.trail ?? [])];
+    if (pointDistance(previous.position, position) <= 0.5) {
+      return trail;
+    }
     const last = trail.at(-1);
-    if (!last || Math.hypot(last.x - previous.position.x, last.y - previous.position.y) > 0.5) {
+    if (!last || pointDistance(last, previous.position) > 0.5) {
       trail.push(previous.position);
     }
     return trail.slice(-this.trailPoints);
@@ -174,6 +178,10 @@ export class PersonTracker {
       y: Math.min(this.map.height, Math.max(0, point.y)),
     };
   }
+}
+
+function pointDistance(first: Point, second: Point): number {
+  return Math.hypot(first.x - second.x, first.y - second.y);
 }
 
 export function normalizeDegrees(value: number): number {

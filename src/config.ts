@@ -69,7 +69,7 @@ export const pluginConfigSchema = z.object({
   }).optional(),
   peopleTtlSeconds: z.number().int().min(10).default(86400),
   ffmpegPath: z.string().min(1).default('ffmpeg'),
-  trailPoints: z.number().int().min(0).max(64).default(10),
+  trailPoints: z.number().int().min(0).max(64).default(0),
 });
 
 export type ResolvedPluginConfig = z.infer<typeof pluginConfigSchema> & {
