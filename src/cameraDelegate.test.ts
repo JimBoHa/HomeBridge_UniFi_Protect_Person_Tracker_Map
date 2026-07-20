@@ -9,7 +9,13 @@ import type {
 } from 'homebridge';
 import { SRTPCryptoSuites, StreamRequestTypes } from 'homebridge';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { buildSrtpOutputUrl, MapCameraDelegate, type ProcessSpawner, writeFrameWithBackpressure } from './cameraDelegate.js';
+import {
+  buildSrtpOutputUrl,
+  MapCameraDelegate,
+  type ProcessSpawner,
+  udpSocketTypeForAddressVersion,
+  writeFrameWithBackpressure,
+} from './cameraDelegate.js';
 import type { MapRenderer } from './renderer.js';
 import { PersonTracker } from './tracker.js';
 import type { Logger, MapConfig } from './types.js';
@@ -240,8 +246,29 @@ describe('writeFrameWithBackpressure', () => {
 
 describe('buildSrtpOutputUrl', () => {
   it('binds RTCP to the port advertised to HomeKit', () => {
-    expect(buildSrtpOutputUrl('10.0.0.12', 50_000, 41_234, 1_376)).toBe(
+    expect(buildSrtpOutputUrl('10.0.0.12', 'ipv4', 50_000, 41_234, 1_376)).toBe(
       'srtp://10.0.0.12:50000?rtcpport=50000&localrtcpport=41234&pkt_size=1376',
     );
+  });
+
+  it('brackets an IPv6 destination while retaining the local RTCP port', () => {
+    expect(buildSrtpOutputUrl('fd00::12', 'ipv6', 50_000, 41_234, 1_376)).toBe(
+      'srtp://[fd00::12]:50000?rtcpport=50000&localrtcpport=41234&pkt_size=1376',
+    );
+  });
+
+  it('does not double-bracket a normalized IPv6 destination', () => {
+    expect(buildSrtpOutputUrl('[fd00::12]', 'ipv6', 50_000, 41_234, 1_376)).toBe(
+      'srtp://[fd00::12]:50000?rtcpport=50000&localrtcpport=41234&pkt_size=1376',
+    );
+  });
+});
+
+describe('udpSocketTypeForAddressVersion', () => {
+  it.each([
+    ['ipv4', 'udp4'],
+    ['ipv6', 'udp6'],
+  ] as const)('maps %s sessions to %s sockets', (addressVersion, socketType) => {
+    expect(udpSocketTypeForAddressVersion(addressVersion)).toBe(socketType);
   });
 });

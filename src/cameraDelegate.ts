@@ -22,6 +22,7 @@ export type ProcessSpawner = (command: string, args: readonly string[]) => Child
 
 type SessionInfo = {
   address: string;
+  addressVersion: PrepareStreamRequest['addressVersion'];
   videoPort: number;
   localVideoPort: number;
   videoSsrc: number;
@@ -65,9 +66,10 @@ export class MapCameraDelegate implements CameraStreamingDelegate {
   }
 
   public prepareStream(request: PrepareStreamRequest, callback: PrepareStreamCallback): void {
-    void allocateUdpPort().then((localVideoPort) => {
+    void allocateUdpPort(request.addressVersion).then((localVideoPort) => {
       const session: SessionInfo = {
         address: request.targetAddress,
+        addressVersion: request.addressVersion,
         videoPort: request.video.port,
         localVideoPort,
         videoSsrc: randomSsrc(),
@@ -137,7 +139,7 @@ export class MapCameraDelegate implements CameraStreamingDelegate {
       '-f', 'rtp',
       '-srtp_out_suite', cryptoSuite === SRTPCryptoSuites.AES_CM_128_HMAC_SHA1_80 ? 'AES_CM_128_HMAC_SHA1_80' : 'NONE',
       '-srtp_out_params', srtpParams,
-      buildSrtpOutputUrl(session.address, session.videoPort, session.localVideoPort, request.video.mtu),
+      buildSrtpOutputUrl(session.address, session.addressVersion, session.videoPort, session.localVideoPort, request.video.mtu),
     ];
 
     this.logger.info(`Starting map stream ${width}x${height}@${fps}fps to ${session.address}:${session.videoPort} from ${session.localVideoPort}`);
@@ -297,9 +299,9 @@ export class MapCameraDelegate implements CameraStreamingDelegate {
   }
 }
 
-async function allocateUdpPort(): Promise<number> {
+async function allocateUdpPort(addressVersion: PrepareStreamRequest['addressVersion']): Promise<number> {
   return new Promise((resolve, reject) => {
-    const socket = createSocket('udp4');
+    const socket = createSocket(udpSocketTypeForAddressVersion(addressVersion));
     socket.once('error', reject);
     socket.bind(0, () => {
       const address = socket.address();
@@ -317,8 +319,21 @@ function frameCacheKey(width: number, height: number): string {
   return `${width}x${height}`;
 }
 
-export function buildSrtpOutputUrl(address: string, videoPort: number, localRtcpPort: number, mtu: number): string {
-  return `srtp://${address}:${videoPort}?rtcpport=${videoPort}&localrtcpport=${localRtcpPort}&pkt_size=${mtu}`;
+export function udpSocketTypeForAddressVersion(addressVersion: PrepareStreamRequest['addressVersion']): 'udp4' | 'udp6' {
+  return addressVersion === 'ipv6' ? 'udp6' : 'udp4';
+}
+
+export function buildSrtpOutputUrl(
+  address: string,
+  addressVersion: PrepareStreamRequest['addressVersion'],
+  videoPort: number,
+  localRtcpPort: number,
+  mtu: number,
+): string {
+  const host = addressVersion === 'ipv6' && !(address.startsWith('[') && address.endsWith(']'))
+    ? `[${address}]`
+    : address;
+  return `srtp://${host}:${videoPort}?rtcpport=${videoPort}&localrtcpport=${localRtcpPort}&pkt_size=${mtu}`;
 }
 
 function toError(error: unknown): Error {
