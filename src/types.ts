@@ -43,6 +43,7 @@ export type PersonPosition = {
   directionDegrees?: number;
   sourceCameraId: string;
   confidence?: number;
+  trail?: Point[];
 };
 
 export type TrackerSnapshot = {
@@ -73,6 +74,7 @@ export type PluginConfig = {
   ffmpegPath?: string;
   motionSensor?: boolean;
   motionResetSeconds?: number;
+  trailPoints?: number;
 };
 
 export type Logger = {

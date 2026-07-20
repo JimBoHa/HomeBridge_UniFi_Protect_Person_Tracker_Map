@@ -64,6 +64,8 @@ Coordinates use the rendered map pixel space. If Protect supplies a path or dire
 
 When `mapConfigPath` is used without an inline `mapConfig`, the settings editor previews that file and credential-only edits preserve the path-backed configuration. Editing map placement or scale in the UI stages an inline `mapConfig`, which takes runtime precedence.
 
+Optionally, each person can carry a movement trail of recent positions, drawn as a fading line in the person's color. Configure the trail length with `trailPoints` (`0`, the default, disables trails; maximum 64). A gap longer than 15 minutes starts a new trail. Enabled trails are included in `/state` responses as `trail` per person.
+
 ## Event Ingestion
 
 External processors can post normalized detections:

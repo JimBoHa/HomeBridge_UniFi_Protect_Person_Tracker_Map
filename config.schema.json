@@ -119,6 +119,14 @@
         "minimum": 5,
         "maximum": 3600,
         "description": "Seconds after the last person detection before the motion sensor clears."
+      },
+      "trailPoints": {
+        "title": "Trail Points",
+        "type": "integer",
+        "default": 0,
+        "minimum": 0,
+        "maximum": 64,
+        "description": "Number of past positions drawn as a fading movement trail behind each person. Disabled by default; maximum 64."
       }
     },
     "required": ["name"]

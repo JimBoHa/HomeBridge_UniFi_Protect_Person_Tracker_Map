@@ -89,7 +89,7 @@ export class UniFiProtectPersonTrackerPlatform implements DynamicPlatformPlugin 
         return;
       }
 
-      const tracker = new PersonTracker(map, config.peopleTtlSeconds * 1000);
+      const tracker = new PersonTracker(map, config.peopleTtlSeconds * 1000, Date.now, config.trailPoints);
       const renderer = new MapRenderer({ path: config.mapImagePath, dataUrl: config.mapImageData });
       httpServer = this.dependencies.createHttpServer(tracker, renderer, config.adminToken, this.log);
       const actualPort = await httpServer.start(config.bindHost, config.port);

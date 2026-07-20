@@ -22,6 +22,7 @@ describe('MapRenderer', () => {
         timestamp: Date.parse('2026-05-24T12:00:00.000Z'),
         directionDegrees: 45,
         sourceCameraId: 'front',
+        trail: [{ x: 40, y: 40 }, { x: 70, y: 55 }],
       }],
     };
 
@@ -66,6 +67,38 @@ describe('MapRenderer', () => {
 
     expect(legacyHeading).toEqual(withoutHeading);
     expect(explicitFov).not.toEqual(legacyHeading);
+  });
+
+  it('renders every trail below every current marker', async () => {
+    const width = 120;
+    const height = 100;
+    const renderer = new MapRenderer();
+    const rgba = await renderer.renderRawRgba({
+      generatedAt: Date.now(),
+      map: { width, height, cameras: [] },
+      people: [
+        {
+          personId: 'first',
+          name: 'First',
+          color: '#d7263d',
+          position: { x: 50, y: 50 },
+          timestamp: Date.now(),
+          sourceCameraId: 'front',
+        },
+        {
+          personId: 'second',
+          name: 'Second',
+          color: '#1b998b',
+          position: { x: 90, y: 50 },
+          timestamp: Date.now(),
+          sourceCameraId: 'hall',
+          trail: [{ x: 10, y: 50 }],
+        },
+      ],
+    }, width, height);
+    const firstMarkerCenter = (50 * width + 50) * 4;
+
+    expect([...rgba.subarray(firstMarkerCenter, firstMarkerCenter + 4)]).toEqual([215, 38, 61, 255]);
   });
 });
 

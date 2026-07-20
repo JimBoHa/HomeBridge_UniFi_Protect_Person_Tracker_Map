@@ -14,6 +14,14 @@ describe('config validation', () => {
     expect(() => resolvePluginConfig({ name: 'Map', adminToken: 'short' })).toThrow();
   });
 
+  it('keeps trails opt-in and validates their bounds', () => {
+    expect(resolvePluginConfig({ name: 'Map' }).trailPoints).toBe(0);
+    expect(resolvePluginConfig({ name: 'Map', trailPoints: 64 }).trailPoints).toBe(64);
+    expect(() => resolvePluginConfig({ name: 'Map', trailPoints: -1 })).toThrow();
+    expect(() => resolvePluginConfig({ name: 'Map', trailPoints: 65 })).toThrow();
+    expect(() => resolvePluginConfig({ name: 'Map', trailPoints: 1.5 })).toThrow();
+  });
+
   it('accepts inline map config and rejects unsafe uploaded image data', async () => {
     await expect(loadMapConfig(undefined, {
       width: 100,

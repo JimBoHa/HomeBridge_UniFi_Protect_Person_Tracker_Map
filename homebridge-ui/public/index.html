@@ -42,6 +42,7 @@
         <label><span>Username</span><input id="protect-username" class="form-control" type="text" autocomplete="username"></label>
         <label><span>Password</span><input id="protect-password" class="form-control" type="password" autocomplete="current-password"></label>
         <label><span>Poll seconds</span><input id="protect-poll" class="form-control" type="number" min="2" step="1"></label>
+        <label><span>Trail points (0 disables)</span><input id="trail-points" class="form-control" type="number" min="0" max="64" step="1"></label>
         <label class="check"><input id="protect-ignore-tls" type="checkbox"><span>Ignore TLS certificate errors</span></label>
       </div>
 
@@ -79,6 +80,7 @@
   const DEFAULT_MAP = { width: 1280, height: 720, cameras: [] };
   const REQUEST_TIMEOUT_MS = 20000;
   const STAGE_TIMEOUT_MS = 30000;
+  const MAX_TRAIL_POINTS = 64;
   const state = {
     blocks: [],
     config: null,
@@ -100,7 +102,7 @@
   const ctx = canvas.getContext('2d');
   const fields = {
     name: el('name'), host: el('protect-host'), username: el('protect-username'), password: el('protect-password'),
-    poll: el('protect-poll'), ignoreTls: el('protect-ignore-tls'), file: el('map-file'), status: el('status'),
+    poll: el('protect-poll'), trailPoints: el('trail-points'), ignoreTls: el('protect-ignore-tls'), file: el('map-file'), status: el('status'),
     discover: el('discover'), addCamera: el('add-camera'), cameraList: el('camera-list'), deleteConfig: el('delete-config'),
     selectedLabel: el('selected-label'), setScale: el('set-scale'), scalePixels: el('scale-pixels'),
     scaleDistance: el('scale-distance'), scaleUnit: el('scale-unit'), scaleHint: el('scale-hint'),
@@ -145,6 +147,7 @@
       ffmpegPath: 'ffmpeg',
       motionSensor: false,
       motionResetSeconds: 30,
+      trailPoints: 0,
       protect: { ignoreTls: true, pollSeconds: 5 },
       ...existing,
     };
@@ -156,6 +159,7 @@
     fields.username.value = state.config.protect?.username ?? '';
     fields.password.value = state.config.protect?.password ?? '';
     fields.poll.value = String(state.config.protect?.pollSeconds ?? 5);
+    fields.trailPoints.value = String(state.config.trailPoints ?? 0);
     fields.ignoreTls.checked = Boolean(state.config.protect?.ignoreTls);
     fields.motionSensor.checked = Boolean(state.config.motionSensor);
     fields.motionReset.value = String(state.config.motionResetSeconds ?? 30);
@@ -167,6 +171,9 @@
 
   function syncConfigFromInputs() {
     state.config.name = fields.name.value.trim() || 'Person Tracker Map';
+    const trailPoints = Number(fields.trailPoints.value);
+    state.config.trailPoints = Number.isInteger(trailPoints) ? clamp(trailPoints, 0, MAX_TRAIL_POINTS) : 0;
+    fields.trailPoints.value = String(state.config.trailPoints);
     state.config.protect = {
       ...(state.config.protect ?? {}),
       host: fields.host.value.trim() || undefined,
@@ -620,7 +627,8 @@
   });
 
   fields.motionSensor.addEventListener('change', syncMotionControls);
-  for (const input of [fields.name, fields.host, fields.username, fields.password, fields.poll, fields.ignoreTls, fields.motionSensor, fields.motionReset]) {
+  fields.motionSensor.addEventListener('change', syncMotionControls);
+  for (const input of [fields.name, fields.host, fields.username, fields.password, fields.poll, fields.trailPoints, fields.ignoreTls, fields.motionSensor, fields.motionReset]) {
     input.addEventListener('input', () => markDirty());
     input.addEventListener('change', () => markDirty());
   }
