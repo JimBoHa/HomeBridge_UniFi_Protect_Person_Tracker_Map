@@ -17,6 +17,8 @@ import type { Logger } from './types.js';
 import { MapRenderer } from './renderer.js';
 import { PersonTracker } from './tracker.js';
 
+export type ProcessSpawner = (command: string, args: readonly string[]) => ChildProcessWithoutNullStreams;
+
 type SessionInfo = {
   address: string;
   videoPort: number;
@@ -29,6 +31,7 @@ type SessionInfo = {
   cachedFrame?: Buffer;
   frameRenderedAt?: number;
   frameRender?: Promise<void>;
+  finishStart?: (error?: Error) => void;
 };
 
 export class MapCameraDelegate implements CameraStreamingDelegate {
@@ -40,6 +43,7 @@ export class MapCameraDelegate implements CameraStreamingDelegate {
     private readonly renderer: MapRenderer,
     ffmpegPath: string,
     private readonly logger: Logger,
+    private readonly processSpawner: ProcessSpawner = spawn,
   ) {
     this.ffmpegPath = resolveFfmpegPath(ffmpegPath);
   }
@@ -131,22 +135,68 @@ export class MapCameraDelegate implements CameraStreamingDelegate {
     ];
 
     this.logger.info(`Starting map stream ${width}x${height}@${fps}fps to ${session.address}:${session.videoPort} from ${session.localVideoPort}`);
-    session.process = spawn(this.ffmpegPath, args);
-    session.process.stdin.on('error', (error) => this.logger.debug(`ffmpeg stdin: ${error.message}`));
-    session.process.stderr.on('data', (data: Buffer) => this.logger.warn(`ffmpeg: ${data.toString('utf8').trim()}`));
-    session.process.on('exit', (code, signal) => {
-      if (session.frameTimer) {
-        clearInterval(session.frameTimer);
-        session.frameTimer = undefined;
+    let callbackFinished = false;
+    const finishStart = (error?: Error): void => {
+      if (callbackFinished) {
+        return;
       }
-      if (code && code !== 0) {
+      callbackFinished = true;
+      if (session.finishStart === finishStart) {
+        session.finishStart = undefined;
+      }
+      if (error) {
+        callback(error);
+      } else {
+        callback();
+      }
+    };
+    session.finishStart = finishStart;
+
+    let ffmpegProcess: ChildProcessWithoutNullStreams;
+    try {
+      ffmpegProcess = this.processSpawner(this.ffmpegPath, args);
+    } catch (error: unknown) {
+      const spawnError = toError(error);
+      this.cleanupSession(request.sessionID, session, undefined);
+      this.logger.error(`Unable to start ffmpeg: ${spawnError.message}`);
+      finishStart(spawnError);
+      return;
+    }
+
+    session.process = ffmpegProcess;
+    let processFinished = false;
+    ffmpegProcess.on('error', (error) => {
+      if (processFinished) {
+        return;
+      }
+      processFinished = true;
+      this.cleanupSession(request.sessionID, session, ffmpegProcess);
+      if (!callbackFinished) {
+        this.logger.error(`Unable to start ffmpeg: ${error.message}`);
+        finishStart(error);
+      } else {
+        this.logger.warn(`ffmpeg process error: ${error.message}`);
+      }
+    });
+    ffmpegProcess.once('exit', (code, signal) => {
+      if (processFinished) {
+        return;
+      }
+      processFinished = true;
+      this.cleanupSession(request.sessionID, session, ffmpegProcess);
+      if (code !== null && code !== 0) {
         this.logger.warn(`ffmpeg exited with code ${code}`);
       } else if (signal) {
         this.logger.info(`Map stream stopped by signal ${signal}`);
       } else {
         this.logger.info('Map stream exited');
       }
+      if (!callbackFinished) {
+        finishStart(new Error(`ffmpeg exited before stream started${code !== null ? ` with code ${code}` : ''}`));
+      }
     });
+    ffmpegProcess.stdin.on('error', (error) => this.logger.debug(`ffmpeg stdin: ${error.message}`));
+    ffmpegProcess.stderr.on('data', (data: Buffer) => this.logger.warn(`ffmpeg: ${data.toString('utf8').trim()}`));
     const refreshFrame = (): void => {
       if (session.frameRender) {
         return;
@@ -167,26 +217,64 @@ export class MapCameraDelegate implements CameraStreamingDelegate {
       if (!session.cachedFrame || !session.frameRenderedAt || Date.now() - session.frameRenderedAt > 1000) {
         refreshFrame();
       }
-      if (session.cachedFrame && session.process?.stdin.writable) {
-        session.process.stdin.write(session.cachedFrame);
+      if (session.process === ffmpegProcess && session.cachedFrame && ffmpegProcess.stdin.writable) {
+        ffmpegProcess.stdin.write(session.cachedFrame);
       }
     };
-    writeFrame();
-    session.frameTimer = setInterval(writeFrame, Math.max(250, Math.floor(1000 / fps)));
-    callback();
+    ffmpegProcess.once('spawn', () => {
+      if (this.sessions.get(request.sessionID) !== session || session.process !== ffmpegProcess) {
+        this.killProcess(ffmpegProcess);
+        finishStart(new Error(`Stream session stopped before ffmpeg started: ${request.sessionID}`));
+        return;
+      }
+      writeFrame();
+      session.frameTimer = setInterval(writeFrame, Math.max(250, Math.floor(1000 / fps)));
+      finishStart();
+    });
   }
 
   private stopStream(request: StopStreamRequest, callback: StreamRequestCallback): void {
     const session = this.sessions.get(request.sessionID);
     this.logger.info(`Stopping map stream for session ${request.sessionID}`);
-    if (session?.process) {
-      if (session.frameTimer) {
-        clearInterval(session.frameTimer);
+    if (session) {
+      const ffmpegProcess = session.process;
+      const finishStart = session.finishStart;
+      this.cleanupSession(request.sessionID, session, ffmpegProcess);
+      finishStart?.(new Error(`Stream stopped before ffmpeg started: ${request.sessionID}`));
+      if (ffmpegProcess) {
+        this.killProcess(ffmpegProcess);
       }
-      session.process.kill('SIGTERM');
     }
-    this.sessions.delete(request.sessionID);
     callback();
+  }
+
+  private cleanupSession(
+    sessionID: string,
+    session: SessionInfo,
+    expectedProcess: ChildProcessWithoutNullStreams | undefined,
+  ): void {
+    if (session.process !== expectedProcess) {
+      return;
+    }
+    if (session.frameTimer) {
+      clearInterval(session.frameTimer);
+      session.frameTimer = undefined;
+    }
+    session.process = undefined;
+    if (this.sessions.get(sessionID) === session) {
+      this.sessions.delete(sessionID);
+    }
+  }
+
+  private killProcess(ffmpegProcess: ChildProcessWithoutNullStreams): void {
+    if (ffmpegProcess.killed) {
+      return;
+    }
+    try {
+      ffmpegProcess.kill('SIGTERM');
+    } catch (error: unknown) {
+      this.logger.warn(`Unable to stop ffmpeg: ${toError(error).message}`);
+    }
   }
 
   private setCachedFrame(width: number, height: number, buffer: Buffer): void {
@@ -220,6 +308,10 @@ function randomSsrc(): number {
 
 function frameCacheKey(width: number, height: number): string {
   return `${width}x${height}`;
+}
+
+function toError(error: unknown): Error {
+  return error instanceof Error ? error : new Error(String(error));
 }
 
 function resolveFfmpegPath(ffmpegPath: string): string {
