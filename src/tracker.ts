@@ -31,8 +31,13 @@ export class PersonTracker {
   }
 
   public ingest(event: ProtectPersonEvent): PersonPosition {
-    const camera = this.findCamera(event.cameraId);
     const previous = this.people.get(event.personId);
+    if (previous && event.timestamp < previous.timestamp) {
+      this.expire();
+      return previous;
+    }
+
+    const camera = this.findCamera(event.cameraId);
     const directionDegrees = this.clampToCameraFov(event.directionDegrees ?? this.deriveDirection(event.path, camera, previous), camera);
     const position = event.path?.at(-1)
       ? this.projectPointIntoCameraFov(camera, event.path.at(-1) as { x: number; y: number })
