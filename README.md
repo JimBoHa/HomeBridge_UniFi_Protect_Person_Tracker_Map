@@ -57,6 +57,8 @@ Open the plugin settings in Homebridge to upload a PNG, JPEG, or PDF map, discov
 
 Coordinates use the rendered map pixel space. If Protect supplies a path or direction, the marker arrow uses it. Otherwise the plugin extrapolates from previous camera position or camera heading.
 
+When `mapConfigPath` is used without an inline `mapConfig`, the settings editor previews that file and credential-only edits preserve the path-backed configuration. Editing map placement or scale in the UI stages an inline `mapConfig`, which takes runtime precedence.
+
 ## Event Ingestion
 
 External processors can post normalized detections:
