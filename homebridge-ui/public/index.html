@@ -542,10 +542,12 @@
   });
 
   fields.addCamera.addEventListener('click', () => {
-    const id = `camera-${state.map.cameras.length + 1}`;
+    let next = state.map.cameras.length + 1;
+    while (state.map.cameras.some((camera) => camera.id === `camera-${next}`)) next += 1;
+    const id = `camera-${next}`;
     state.map.cameras.push({
       id,
-      name: `Camera ${state.map.cameras.length + 1}`,
+      name: `Camera ${next}`,
       position: nextCameraPosition(),
       headingDegrees: 0,
     });
