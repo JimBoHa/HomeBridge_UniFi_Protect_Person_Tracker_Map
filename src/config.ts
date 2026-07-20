@@ -40,7 +40,16 @@ export const mapConfigSchema = z.object({
     headingDegrees: z.number().finite().min(0).lt(360).optional(),
   })).max(512),
 }).superRefine((config, ctx) => {
+  const cameraIds = new Set<string>();
   for (const [index, camera] of config.cameras.entries()) {
+    if (cameraIds.has(camera.id)) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['cameras', index, 'id'],
+        message: 'camera id must be unique',
+      });
+    }
+    cameraIds.add(camera.id);
     if (camera.position.x > config.width || camera.position.y > config.height) {
       ctx.addIssue({
         code: 'custom',

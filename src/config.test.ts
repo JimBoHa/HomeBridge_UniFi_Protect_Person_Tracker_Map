@@ -41,6 +41,17 @@ describe('config validation', () => {
     })).toThrow('camera position');
   });
 
+  it('rejects duplicate camera ids from manual configuration', () => {
+    expect(() => mapConfigSchema.parse({
+      width: 100,
+      height: 100,
+      cameras: [
+        { id: 'front', name: 'Front', position: { x: 10, y: 20 } },
+        { id: 'front', name: 'Duplicate', position: { x: 30, y: 40 } },
+      ],
+    })).toThrow('camera id must be unique');
+  });
+
   it('loads default and file-backed map config', async () => {
     expect(await loadMapConfig()).toEqual({ width: 1280, height: 720, cameras: [] });
     const directory = await mkdtemp(join(tmpdir(), 'tracker-map-'));
