@@ -235,7 +235,7 @@ export class MapCameraDelegate implements CameraStreamingDelegate {
         return;
       }
       writeFrame();
-      session.frameTimer = setInterval(writeFrame, Math.max(250, Math.floor(1000 / fps)));
+      session.frameTimer = setInterval(writeFrame, frameIntervalMs(fps));
       finishStart();
     });
   }
@@ -335,6 +335,10 @@ export function writeFrameWithBackpressure(stdin: Writable, frame: Buffer, state
       state.blocked = false;
     });
   }
+}
+
+export function frameIntervalMs(fps: number): number {
+  return Math.floor(1000 / fps);
 }
 
 function resolveFfmpegPath(ffmpegPath: string): string {
