@@ -110,6 +110,14 @@
     state.mapDirty = true;
     markDirty(message);
   };
+  const errorMessage = (error) => {
+    try {
+      if (error && typeof error === 'object' && typeof error.message === 'string') return error.message;
+      return String(error);
+    } catch {
+      return 'Unknown error';
+    }
+  };
   const clamp = (value, min, max) => Number.isFinite(value) ? Math.max(min, Math.min(max, value)) : min;
   const sanitizeId = (value) => value.trim().replace(/[^A-Za-z0-9_.:-]/g, '-').slice(0, 128);
 
@@ -200,8 +208,9 @@
       );
       setStatus(message);
     } catch (error) {
-      setStatus(`Staging failed: ${error.message}`);
-      homebridge.toast.error(error.message, 'Staging failed');
+      const message = errorMessage(error);
+      setStatus(`Staging failed: ${message}`);
+      homebridge.toast.error(message, 'Staging failed');
     } finally {
       state.staging = false;
     }
