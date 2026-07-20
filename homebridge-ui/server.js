@@ -1,8 +1,8 @@
 import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { extname, isAbsolute, join, normalize } from 'node:path';
-import { Agent, request } from 'undici';
 import { HomebridgePluginUiServer, RequestError } from '@homebridge/plugin-ui-utils';
 import { loadConfiguredMapConfig, MapConfigLoadError } from './map-config.js';
+import { fetchBootstrap } from './protect-client.js';
 
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 
@@ -112,42 +112,6 @@ function sanitizeProtect(value) {
     password: typeof value?.password === 'string' ? value.password : undefined,
     ignoreTls: Boolean(value?.ignoreTls),
   };
-}
-
-async function fetchBootstrap(config) {
-  const dispatcher = config.ignoreTls ? new Agent({ connect: { rejectUnauthorized: false } }) : undefined;
-  const login = await request(url(config.host, '/api/auth/login'), {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ username: config.username, password: config.password }),
-    dispatcher,
-  });
-  if (login.statusCode < 200 || login.statusCode > 299) {
-    throw new RequestError(`Protect login failed: ${login.statusCode}`, {});
-  }
-  const cookie = login.headers['set-cookie'];
-  const sessionCookie = Array.isArray(cookie) ? cookie[0]?.split(';')[0] : String(cookie ?? '').split(';')[0];
-  if (!sessionCookie) {
-    throw new RequestError('Protect login did not return a session cookie.', {});
-  }
-
-  const bootstrap = await request(url(config.host, '/proxy/protect/api/bootstrap'), {
-    method: 'GET',
-    headers: { cookie: sessionCookie },
-    dispatcher,
-  });
-  if (bootstrap.statusCode < 200 || bootstrap.statusCode > 299) {
-    throw new RequestError(`Protect bootstrap failed: ${bootstrap.statusCode}`, {});
-  }
-  return bootstrap.body.json();
-}
-
-function url(hostValue, path) {
-  const host = /^https?:\/\//.test(hostValue) ? hostValue : `https://${hostValue}`;
-  const parsed = new URL(host);
-  parsed.pathname = path;
-  parsed.search = '';
-  return parsed.toString();
 }
 
 function extractCameras(payload) {
