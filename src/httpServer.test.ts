@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
+import type { Server } from 'node:http';
 import { MapRenderer } from './renderer.js';
 import { PersonTracker } from './tracker.js';
 import { TrackerHttpServer } from './httpServer.js';
@@ -104,5 +105,14 @@ describe('TrackerHttpServer', () => {
     const second = new TrackerHttpServer(tracker, new MapRenderer(), 'x'.repeat(32), logger);
     await expect(second.start('127.0.0.1', port)).rejects.toThrow(/EADDRINUSE/);
     await second.stop();
+  });
+
+  it('replaces the provisional bind error listener after listening', async () => {
+    const tracker = new PersonTracker(map, 60_000);
+    server = new TrackerHttpServer(tracker, new MapRenderer(), 'x'.repeat(32), logger);
+    await server.start('127.0.0.1', 0);
+
+    const nodeServer = Reflect.get(server, 'server') as Server;
+    expect(nodeServer.listenerCount('error')).toBe(1);
   });
 });
