@@ -1,5 +1,5 @@
 import type { Logger, ProtectConfig, ProtectPersonEvent } from './types.js';
-import { Agent } from 'undici';
+import { Agent, fetch as undiciFetch } from 'undici';
 
 export type ProtectEventSink = (event: ProtectPersonEvent) => void;
 
@@ -13,7 +13,10 @@ export class UniFiProtectAdapter {
     private readonly config: ProtectConfig | undefined,
     private readonly sink: ProtectEventSink,
     private readonly logger: Logger,
-    private readonly fetchImpl: typeof fetch = fetch,
+    // The undici package's fetch, not the Node global: the tlsAgent dispatcher is an
+    // undici-package Agent, and handing it to a different undici build (the Node
+    // built-in fetch) yields responses with missing headers, so login cookies vanish.
+    private readonly fetchImpl: typeof fetch = undiciFetch as unknown as typeof fetch,
     initialLookbackMs = 7 * 24 * 60 * 60 * 1000,
   ) {
     this.tlsAgent = config?.ignoreTls ? new Agent({ connect: { rejectUnauthorized: false } }) : undefined;
