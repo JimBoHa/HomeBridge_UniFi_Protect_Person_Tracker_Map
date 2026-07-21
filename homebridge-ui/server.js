@@ -3,6 +3,7 @@ import { extname, isAbsolute, join, normalize } from 'node:path';
 import { HomebridgePluginUiServer, RequestError } from '@homebridge/plugin-ui-utils';
 import { loadConfiguredMapConfig, MapConfigLoadError } from './map-config.js';
 import { fetchBootstrap } from './protect-client.js';
+import { applyProtectControllerFallback, sanitizeProtect } from './protect-config.js';
 
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 
@@ -93,25 +94,11 @@ class TrackerMapUiServer extends HomebridgePluginUiServer {
         ? config.platforms.find((platform) => platform?.platform === 'UniFi Protect')
         : undefined;
       const controller = Array.isArray(unifi?.controllers) ? unifi.controllers[0] : undefined;
-      return {
-        host: direct.host ?? controller?.address,
-        username: direct.username ?? controller?.username,
-        password: direct.password ?? controller?.password,
-        ignoreTls: direct.ignoreTls ?? true,
-      };
+      return applyProtectControllerFallback(direct, controller);
     } catch {
       return direct;
     }
   }
-}
-
-function sanitizeProtect(value) {
-  return {
-    host: typeof value?.host === 'string' ? value.host.trim() : undefined,
-    username: typeof value?.username === 'string' ? value.username : undefined,
-    password: typeof value?.password === 'string' ? value.password : undefined,
-    ignoreTls: Boolean(value?.ignoreTls),
-  };
 }
 
 function extractCameras(payload) {
