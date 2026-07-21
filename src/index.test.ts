@@ -58,9 +58,23 @@ function createAccessory(configureController = vi.fn()): PlatformAccessory {
 function createApi(): {
   api: API;
   emit(event: APIEvent): void;
+  cameraControllers: Array<{
+    options: { delegate: object };
+    forceStopStreamingSession: ReturnType<typeof vi.fn>;
+  }>;
 } {
   const listeners = new Map<APIEvent, () => void>();
-  class CameraController {}
+  const cameraControllers: Array<{
+    options: { delegate: object };
+    forceStopStreamingSession: ReturnType<typeof vi.fn>;
+  }> = [];
+  class CameraController {
+    public readonly forceStopStreamingSession = vi.fn();
+
+    public constructor(public readonly options: { delegate: object }) {
+      cameraControllers.push(this);
+    }
+  }
   const api = {
     on: vi.fn((event: APIEvent, listener: () => void) => {
       listeners.set(event, listener);
@@ -80,6 +94,7 @@ function createApi(): {
   return {
     api,
     emit: (event) => listeners.get(event)?.(),
+    cameraControllers,
   };
 }
 
@@ -88,6 +103,39 @@ function getLaunchPromise(platform: UniFiProtectPersonTrackerPlatform): Promise<
 }
 
 describe('UniFiProtectPersonTrackerPlatform lifecycle', () => {
+  it('wires failed ffmpeg sessions to the HomeKit camera controller', async () => {
+    const httpServer = {
+      start: vi.fn(async () => 4321),
+      stop: vi.fn(async () => undefined),
+    };
+    const protectAdapter = {
+      start: vi.fn(),
+      stop: vi.fn(),
+    };
+    const dependencies: PlatformDependencies = {
+      loadMapConfig: vi.fn(async () => map),
+      createHttpServer: vi.fn(() => httpServer),
+      createProtectAdapter: vi.fn(() => protectAdapter),
+    };
+    const { api, emit, cameraControllers } = createApi();
+    const configureController = vi.fn();
+    const platform = new UniFiProtectPersonTrackerPlatform(createLogger(), config, api, dependencies);
+    platform.configureAccessory(createAccessory(configureController));
+
+    emit(APIEvent.DID_FINISH_LAUNCHING);
+    await expect(getLaunchPromise(platform)).resolves.toBeUndefined();
+
+    const cameraController = cameraControllers[0];
+    expect(configureController).toHaveBeenCalledWith(cameraController);
+    const terminationHandler = Reflect.get(
+      cameraController.options.delegate,
+      'streamTerminationHandler',
+    ) as (sessionID: string) => void;
+    terminationHandler('failed-session');
+
+    expect(cameraController.forceStopStreamingSession).toHaveBeenCalledWith('failed-session');
+  });
+
   it('cancels and cleans a server still binding when shutdown begins', async () => {
     const bind = deferred<number>();
     const httpServer = {

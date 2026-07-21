@@ -3,6 +3,7 @@ import { PassThrough, type Writable } from 'node:stream';
 import type { ChildProcessWithoutNullStreams } from 'node:child_process';
 import type {
   PrepareStreamRequest,
+  ReconfigureStreamRequest,
   StartStreamRequest,
   StopStreamRequest,
   StreamRequestCallback,
@@ -11,6 +12,7 @@ import { SRTPCryptoSuites, StreamRequestTypes } from 'homebridge';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   buildSrtpOutputUrl,
+  FFMPEG_TERMINATION_GRACE_MS,
   MapCameraDelegate,
   type ProcessSpawner,
   udpSocketTypeForAddressVersion,
@@ -31,16 +33,27 @@ class FakeProcess extends EventEmitter {
   public readonly stdout = new PassThrough();
   public readonly stderr = new PassThrough();
   public killed = false;
-  public readonly kill = vi.fn(() => {
+  public exitCode: number | null = null;
+  public signalCode: NodeJS.Signals | null = null;
+  public readonly signals: Array<NodeJS.Signals | number | undefined> = [];
+  public readonly kill = vi.fn((signal?: NodeJS.Signals | number) => {
     this.killed = true;
+    this.signals.push(signal);
     return true;
   });
+
+  public emitExit(code: number | null, signal: NodeJS.Signals | null): void {
+    this.exitCode = code;
+    this.signalCode = signal;
+    this.emit('exit', code, signal);
+  }
 }
 
 function createHarness(spawnImplementation?: ProcessSpawner): {
   delegate: MapCameraDelegate;
   logger: Logger;
   renderRawRgba: ReturnType<typeof vi.fn>;
+  streamTerminationHandler: ReturnType<typeof vi.fn>;
 } {
   const logger = {
     debug: vi.fn(),
@@ -56,6 +69,7 @@ function createHarness(spawnImplementation?: ProcessSpawner): {
   const processSpawner = spawnImplementation ?? (() => {
     throw new Error('Test must provide a process spawner');
   });
+  const streamTerminationHandler = vi.fn<(sessionID: string) => void>();
 
   return {
     delegate: new MapCameraDelegate(
@@ -64,9 +78,11 @@ function createHarness(spawnImplementation?: ProcessSpawner): {
       '/test/ffmpeg',
       logger,
       processSpawner,
+      streamTerminationHandler,
     ),
     logger,
     renderRawRgba,
+    streamTerminationHandler,
   };
 }
 
@@ -117,15 +133,30 @@ function stopRequest(sessionID = 'session-1'): StopStreamRequest {
   return { sessionID, type: StreamRequestTypes.STOP };
 }
 
+function reconfigureRequest(sessionID = 'session-1'): ReconfigureStreamRequest {
+  return {
+    sessionID,
+    type: StreamRequestTypes.RECONFIGURE,
+    video: {
+      width: 2,
+      height: 2,
+      fps: 5,
+      max_bit_rate: 200,
+      rtcp_interval: 0.5,
+    },
+  };
+}
+
 describe('MapCameraDelegate ffmpeg lifecycle', () => {
   afterEach(() => {
+    vi.useRealTimers();
     vi.restoreAllMocks();
   });
 
   it('reports an asynchronous spawn error through the START callback', async () => {
     const child = new FakeProcess();
     const spawner = vi.fn<ProcessSpawner>(() => child as unknown as ChildProcessWithoutNullStreams);
-    const { delegate, logger, renderRawRgba } = createHarness(spawner);
+    const { delegate, logger, renderRawRgba, streamTerminationHandler } = createHarness(spawner);
     await prepareStream(delegate);
     const callback = vi.fn<StreamRequestCallback>();
 
@@ -142,6 +173,7 @@ describe('MapCameraDelegate ffmpeg lifecycle', () => {
     expect(callback).toHaveBeenCalledWith(spawnError);
     expect(renderRawRgba).not.toHaveBeenCalled();
     expect(logger.error).toHaveBeenCalledWith('Unable to start ffmpeg: spawn /test/ffmpeg ENOENT');
+    expect(streamTerminationHandler).not.toHaveBeenCalled();
 
     const retry = vi.fn<StreamRequestCallback>();
     delegate.handleStreamRequest(startRequest(), retry);
@@ -152,7 +184,7 @@ describe('MapCameraDelegate ffmpeg lifecycle', () => {
   it('acknowledges START on spawn and cleans up an early nonzero exit once', async () => {
     const child = new FakeProcess();
     const spawner = vi.fn<ProcessSpawner>(() => child as unknown as ChildProcessWithoutNullStreams);
-    const { delegate, logger } = createHarness(spawner);
+    const { delegate, logger, streamTerminationHandler } = createHarness(spawner);
     const clearIntervalSpy = vi.spyOn(globalThis, 'clearInterval');
     await prepareStream(delegate);
     const callback = vi.fn<StreamRequestCallback>();
@@ -164,10 +196,12 @@ describe('MapCameraDelegate ffmpeg lifecycle', () => {
     expect(callback).toHaveBeenCalledOnce();
     expect(callback).toHaveBeenCalledWith();
 
-    child.emit('exit', 1, null);
+    child.emitExit(1, null);
     expect(callback).toHaveBeenCalledOnce();
     expect(clearIntervalSpy).toHaveBeenCalledOnce();
     expect(logger.warn).toHaveBeenCalledWith('ffmpeg exited with code 1');
+    expect(streamTerminationHandler).toHaveBeenCalledOnce();
+    expect(streamTerminationHandler).toHaveBeenCalledWith('session-1');
 
     const retry = vi.fn<StreamRequestCallback>();
     delegate.handleStreamRequest(startRequest(), retry);
@@ -177,7 +211,7 @@ describe('MapCameraDelegate ffmpeg lifecycle', () => {
   it('settles a pending START and kills ffmpeg when STOP wins the race', async () => {
     const child = new FakeProcess();
     const spawner = vi.fn<ProcessSpawner>(() => child as unknown as ChildProcessWithoutNullStreams);
-    const { delegate } = createHarness(spawner);
+    const { delegate, streamTerminationHandler } = createHarness(spawner);
     await prepareStream(delegate);
     const startCallback = vi.fn<StreamRequestCallback>();
     const stopCallback = vi.fn<StreamRequestCallback>();
@@ -191,10 +225,12 @@ describe('MapCameraDelegate ffmpeg lifecycle', () => {
     }));
     expect(stopCallback).toHaveBeenCalledWith();
     expect(child.kill).toHaveBeenCalledWith('SIGTERM');
+    expect(child.stdin.writableEnded).toBe(true);
 
     child.emit('spawn');
-    child.emit('exit', null, 'SIGTERM');
+    child.emitExit(null, 'SIGTERM');
     expect(startCallback).toHaveBeenCalledOnce();
+    expect(streamTerminationHandler).not.toHaveBeenCalled();
   });
 
   it('reports a synchronous spawner failure through the START callback', async () => {
@@ -202,13 +238,101 @@ describe('MapCameraDelegate ffmpeg lifecycle', () => {
     const spawner = vi.fn<ProcessSpawner>(() => {
       throw spawnError;
     });
-    const { delegate } = createHarness(spawner);
+    const { delegate, streamTerminationHandler } = createHarness(spawner);
     await prepareStream(delegate);
     const callback = vi.fn<StreamRequestCallback>();
 
     expect(() => delegate.handleStreamRequest(startRequest(), callback)).not.toThrow();
     expect(callback).toHaveBeenCalledOnce();
     expect(callback).toHaveBeenCalledWith(spawnError);
+    expect(streamTerminationHandler).not.toHaveBeenCalled();
+  });
+
+  it('releases the HomeKit stream once after a post-START process error', async () => {
+    vi.useFakeTimers();
+    const child = new FakeProcess();
+    const spawner = vi.fn<ProcessSpawner>(() => child as unknown as ChildProcessWithoutNullStreams);
+    const { delegate, streamTerminationHandler } = createHarness(spawner);
+    await prepareStream(delegate);
+    const callback = vi.fn<StreamRequestCallback>();
+
+    delegate.handleStreamRequest(startRequest(), callback);
+    child.emit('spawn');
+    child.emit('error', new Error('encoder failed'));
+
+    expect(callback).toHaveBeenCalledOnce();
+    expect(streamTerminationHandler).toHaveBeenCalledOnce();
+    expect(streamTerminationHandler).toHaveBeenCalledWith('session-1');
+    expect(child.stdin.writableEnded).toBe(true);
+    expect(child.kill).toHaveBeenCalledWith('SIGTERM');
+
+    child.emitExit(1, null);
+    vi.advanceTimersByTime(FFMPEG_TERMINATION_GRACE_MS);
+    expect(streamTerminationHandler).toHaveBeenCalledOnce();
+    expect(child.kill).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('escalates an ignored SIGTERM and never releases an intentionally stopped stream', async () => {
+    vi.useFakeTimers();
+    const child = new FakeProcess();
+    const spawner = vi.fn<ProcessSpawner>(() => child as unknown as ChildProcessWithoutNullStreams);
+    const { delegate, streamTerminationHandler } = createHarness(spawner);
+    await prepareStream(delegate);
+
+    delegate.handleStreamRequest(startRequest(), vi.fn());
+    child.emit('spawn');
+    delegate.handleStreamRequest(stopRequest(), vi.fn());
+
+    expect(child.stdin.writableEnded).toBe(true);
+    expect(child.kill).toHaveBeenNthCalledWith(1, 'SIGTERM');
+    expect(streamTerminationHandler).not.toHaveBeenCalled();
+
+    vi.advanceTimersByTime(FFMPEG_TERMINATION_GRACE_MS - 1);
+    expect(child.kill).toHaveBeenCalledTimes(1);
+    vi.advanceTimersByTime(1);
+    expect(child.kill).toHaveBeenNthCalledWith(2, 'SIGKILL');
+    expect(streamTerminationHandler).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('cancels the force-kill fallback when ffmpeg exits after STOP', async () => {
+    vi.useFakeTimers();
+    const child = new FakeProcess();
+    const spawner = vi.fn<ProcessSpawner>(() => child as unknown as ChildProcessWithoutNullStreams);
+    const { delegate, streamTerminationHandler } = createHarness(spawner);
+    await prepareStream(delegate);
+
+    delegate.handleStreamRequest(startRequest(), vi.fn());
+    child.emit('spawn');
+    delegate.handleStreamRequest(stopRequest(), vi.fn());
+    expect(vi.getTimerCount()).toBe(1);
+
+    child.emitExit(null, 'SIGTERM');
+    expect(vi.getTimerCount()).toBe(0);
+    vi.advanceTimersByTime(FFMPEG_TERMINATION_GRACE_MS);
+    expect(child.kill).toHaveBeenCalledTimes(1);
+    expect(streamTerminationHandler).not.toHaveBeenCalled();
+  });
+
+  it('does not release or terminate a stream when HomeKit reconfigures it', async () => {
+    const child = new FakeProcess();
+    const spawner = vi.fn<ProcessSpawner>(() => child as unknown as ChildProcessWithoutNullStreams);
+    const { delegate, streamTerminationHandler } = createHarness(spawner);
+    await prepareStream(delegate);
+    const callback = vi.fn<StreamRequestCallback>();
+
+    delegate.handleStreamRequest(startRequest(), vi.fn());
+    child.emit('spawn');
+    delegate.handleStreamRequest(reconfigureRequest(), callback);
+
+    expect(callback).toHaveBeenCalledWith();
+    expect(child.kill).not.toHaveBeenCalled();
+    expect(streamTerminationHandler).not.toHaveBeenCalled();
+
+    delegate.handleStreamRequest(stopRequest(), vi.fn());
+    child.emitExit(null, 'SIGTERM');
+    expect(streamTerminationHandler).not.toHaveBeenCalled();
   });
 });
 
