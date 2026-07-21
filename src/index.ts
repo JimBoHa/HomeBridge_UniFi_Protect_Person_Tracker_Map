@@ -1,4 +1,4 @@
-import type { API, DynamicPlatformPlugin, Logging, PlatformAccessory, PlatformConfig, Service } from 'homebridge';
+import type { API, CameraController, DynamicPlatformPlugin, Logging, PlatformAccessory, PlatformConfig, Service } from 'homebridge';
 import { APIEvent, H264Level, H264Profile, SRTPCryptoSuites } from 'homebridge';
 import { MapCameraDelegate } from './cameraDelegate.js';
 import { loadMapConfig, resolvePluginConfig } from './config.js';
@@ -116,9 +116,16 @@ export class UniFiProtectPersonTrackerPlatform implements DynamicPlatformPlugin 
         .setCharacteristic(this.api.hap.Characteristic.Model, 'UniFi Protect Person Tracker Map')
         .setCharacteristic(this.api.hap.Characteristic.SerialNumber, 'person-tracker-map');
 
-      const delegate = new MapCameraDelegate(tracker, renderer, config.ffmpegPath, this.log);
+      const delegate = new MapCameraDelegate(
+        tracker,
+        renderer,
+        config.ffmpegPath,
+        this.log,
+        undefined,
+        (sessionID) => cameraController.forceStopStreamingSession(sessionID),
+      );
       const motionService = this.configureMotionSensor(accessory, tracker, config.motionSensor, config.motionResetSeconds);
-      accessory.configureController(new this.api.hap.CameraController({
+      const cameraController: CameraController = new this.api.hap.CameraController({
         cameraStreamCount: 2,
         delegate,
         sensors: motionService ? { motion: motionService } : undefined,
@@ -136,7 +143,8 @@ export class UniFiProtectPersonTrackerPlatform implements DynamicPlatformPlugin 
             ],
           },
         },
-      }));
+      });
+      accessory.configureController(cameraController);
       if (isNew) {
         this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
       } else {
