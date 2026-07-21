@@ -14,6 +14,14 @@ describe('config validation', () => {
     expect(() => resolvePluginConfig({ name: 'Map', adminToken: 'short' })).toThrow();
   });
 
+  it('keeps trails opt-in and validates their bounds', () => {
+    expect(resolvePluginConfig({ name: 'Map' }).trailPoints).toBe(0);
+    expect(resolvePluginConfig({ name: 'Map', trailPoints: 64 }).trailPoints).toBe(64);
+    expect(() => resolvePluginConfig({ name: 'Map', trailPoints: -1 })).toThrow();
+    expect(() => resolvePluginConfig({ name: 'Map', trailPoints: 65 })).toThrow();
+    expect(() => resolvePluginConfig({ name: 'Map', trailPoints: 1.5 })).toThrow();
+  });
+
   it('accepts inline map config and rejects unsafe uploaded image data', async () => {
     await expect(loadMapConfig(undefined, {
       width: 100,
@@ -28,9 +36,36 @@ describe('config validation', () => {
     })).toThrow('map image');
   });
 
+  it('defaults and validates motion sensor settings', () => {
+    const defaults = resolvePluginConfig({ name: 'Map' });
+    expect(defaults.motionSensor).toBe(false);
+    expect(defaults.motionResetSeconds).toBe(30);
+
+    const enabled = resolvePluginConfig({ name: 'Map', motionSensor: true, motionResetSeconds: 120 });
+    expect(enabled.motionSensor).toBe(true);
+    expect(enabled.motionResetSeconds).toBe(120);
+
+    expect(() => resolvePluginConfig({ name: 'Map', motionResetSeconds: 1 })).toThrow();
+  });
+
   it('requires absolute local paths to prevent ambiguous traversal', () => {
     expect(() => requireAbsoluteSafePath('../secret', 'mapImagePath')).toThrow('absolute');
     expect(requireAbsoluteSafePath('/tmp/map.png', 'mapImagePath')).toBe('/tmp/map.png');
+  });
+
+  it('accepts and validates per-camera field of view', () => {
+    const parsed = mapConfigSchema.parse({
+      width: 100,
+      height: 100,
+      cameras: [{ id: 'a', name: 'A', position: { x: 10, y: 10 }, headingDegrees: 90, fovDegrees: 120 }],
+    });
+    expect(parsed.cameras[0]?.fovDegrees).toBe(120);
+
+    expect(() => mapConfigSchema.parse({
+      width: 100,
+      height: 100,
+      cameras: [{ id: 'a', name: 'A', position: { x: 10, y: 10 }, fovDegrees: 5 }],
+    })).toThrow();
   });
 
   it('rejects camera coordinates outside map bounds', () => {
@@ -39,6 +74,17 @@ describe('config validation', () => {
       height: 100,
       cameras: [{ id: 'a', name: 'A', position: { x: 200, y: 50 } }],
     })).toThrow('camera position');
+  });
+
+  it('rejects duplicate camera ids from manual configuration', () => {
+    expect(() => mapConfigSchema.parse({
+      width: 100,
+      height: 100,
+      cameras: [
+        { id: 'front', name: 'Front', position: { x: 10, y: 20 } },
+        { id: 'front', name: 'Duplicate', position: { x: 30, y: 40 } },
+      ],
+    })).toThrow('camera id must be unique');
   });
 
   it('loads default and file-backed map config', async () => {

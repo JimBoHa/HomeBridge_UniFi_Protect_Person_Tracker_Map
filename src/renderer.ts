@@ -5,7 +5,7 @@ import { extname } from 'node:path';
 import { Readable, Writable } from 'node:stream';
 import { decodeJPEGFromStream, decodePNGFromStream, encodeJPEGToStream, encodePNGToStream, make, type Bitmap, type CanvasContext } from 'pureimage';
 import { requireAbsoluteSafePath } from './config.js';
-import type { TrackerSnapshot } from './types.js';
+import type { CameraPlacement, PersonPosition, TrackerSnapshot } from './types.js';
 
 export type MapImageSource = {
   path?: string;
@@ -98,6 +98,7 @@ export class MapRenderer {
 
   private drawCameras(ctx: CanvasContext, snapshot: TrackerSnapshot): void {
     for (const camera of snapshot.map.cameras) {
+      this.drawFovWedge(ctx, camera, snapshot);
       ctx.fillStyle = '#1d3557';
       ctx.beginPath();
       ctx.arc(camera.position.x, camera.position.y, 8, 0, Math.PI * 2);
@@ -108,9 +109,32 @@ export class MapRenderer {
     }
   }
 
+  private drawFovWedge(ctx: CanvasContext, camera: CameraPlacement, snapshot: TrackerSnapshot): void {
+    if (typeof camera.headingDegrees !== 'number' || typeof camera.fovDegrees !== 'number') {
+      return;
+    }
+
+    const fov = Math.min(360, camera.fovDegrees);
+    const radius = pixelsForFeet(snapshot, 15) ?? 60;
+    const startDegrees = camera.headingDegrees - fov / 2;
+    const stepCount = Math.max(8, Math.ceil(fov / 5));
+    ctx.fillStyle = 'rgba(29, 53, 87, 0.12)';
+    ctx.beginPath();
+    ctx.moveTo(camera.position.x, camera.position.y);
+    for (let step = 0; step <= stepCount; step += 1) {
+      const radians = (startDegrees + (fov * step) / stepCount) * Math.PI / 180;
+      ctx.lineTo(camera.position.x + Math.cos(radians) * radius, camera.position.y + Math.sin(radians) * radius);
+    }
+    ctx.closePath();
+    ctx.fill();
+  }
+
   private drawPeople(ctx: CanvasContext, snapshot: TrackerSnapshot): void {
     const dotRadius = pixelsForFeet(snapshot, 1.5) ?? 13;
     const dotOutlineRadius = dotRadius + Math.max(2, dotRadius * 0.18);
+    for (const person of snapshot.people) {
+      this.drawTrail(ctx, person);
+    }
     for (const person of snapshot.people) {
       ctx.fillStyle = '#ffffff';
       ctx.beginPath();
@@ -129,6 +153,24 @@ export class MapRenderer {
       ctx.fillStyle = '#111111';
       ctx.font = `16px ${FONT_FAMILY}`;
       ctx.fillText(`${person.name} ${new Date(person.timestamp).toLocaleTimeString('en-US', { hour12: false })}`, person.position.x + 18, person.position.y + 5);
+    }
+  }
+
+  private drawTrail(ctx: CanvasContext, person: PersonPosition): void {
+    const trail = person.trail ?? [];
+    if (trail.length === 0) {
+      return;
+    }
+
+    const points = [...trail, person.position];
+    ctx.lineWidth = 4;
+    for (let index = 1; index < points.length; index += 1) {
+      const alpha = 0.15 + 0.65 * (index / (points.length - 1));
+      ctx.strokeStyle = withAlpha(person.color, alpha);
+      ctx.beginPath();
+      ctx.moveTo(points[index - 1].x, points[index - 1].y);
+      ctx.lineTo(points[index].x, points[index].y);
+      ctx.stroke();
     }
   }
 
@@ -279,8 +321,21 @@ function scaleSnapshot(snapshot: TrackerSnapshot, width: number, height: number)
         x: person.position.x * xScale,
         y: person.position.y * yScale,
       },
+      trail: person.trail?.map((point) => ({
+        x: point.x * xScale,
+        y: point.y * yScale,
+      })),
     })),
   };
+}
+
+function withAlpha(hexColor: string, alpha: number): string {
+  const match = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hexColor);
+  if (!match) {
+    return hexColor;
+  }
+  const [, r, g, b] = match;
+  return `rgba(${parseInt(r, 16)},${parseInt(g, 16)},${parseInt(b, 16)},${alpha.toFixed(2)})`;
 }
 
 function pixelsForFeet(snapshot: TrackerSnapshot, feet: number): number | undefined {

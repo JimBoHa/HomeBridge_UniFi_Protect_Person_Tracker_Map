@@ -1,23 +1,42 @@
 import type { Logger, ProtectConfig, ProtectPersonEvent } from './types.js';
-import { Agent } from 'undici';
+import { Agent, fetch as undiciFetch } from 'undici';
 
 export type ProtectEventSink = (event: ProtectPersonEvent) => void;
+
+const REQUEST_TIMEOUT_MS = 30_000;
+const EVENT_PAGE_LIMIT = 1000;
+const MAX_EVENT_PAGES = 64;
+const EVENT_CURSOR_OVERLAP_MS = 15 * 60 * 1000;
+
+type ProtectEventBatch = {
+  events: ProtectPersonEvent[];
+  completedThrough: number;
+};
 
 export class UniFiProtectAdapter {
   private cookie = '';
   private timer?: NodeJS.Timeout;
+  private activePoll?: Promise<void>;
+  private activeRequest?: AbortController;
   private lastEvent: number;
-  private readonly tlsAgent?: Agent;
+  private readonly eventQueryFloor: number;
+  private cursorAdvanced = false;
+  private readonly recentEvents = new Map<string, number>();
+  private tlsAgent?: Agent;
+  private running = false;
 
   public constructor(
     private readonly config: ProtectConfig | undefined,
     private readonly sink: ProtectEventSink,
     private readonly logger: Logger,
-    private readonly fetchImpl: typeof fetch = fetch,
+    // The undici package's fetch, not the Node global: the tlsAgent dispatcher is an
+    // undici-package Agent, and handing it to a different undici build (the Node
+    // built-in fetch) yields responses with missing headers, so login cookies vanish.
+    private readonly fetchImpl: typeof fetch = undiciFetch as unknown as typeof fetch,
     initialLookbackMs = 7 * 24 * 60 * 60 * 1000,
   ) {
-    this.tlsAgent = config?.ignoreTls ? new Agent({ connect: { rejectUnauthorized: false } }) : undefined;
     this.lastEvent = Date.now() - Math.max(10_000, initialLookbackMs);
+    this.eventQueryFloor = this.lastEvent + 1;
   }
 
   public start(): void {
@@ -26,79 +45,197 @@ export class UniFiProtectAdapter {
       return;
     }
 
-    const pollMs = Math.max(2, this.config.pollSeconds ?? 5) * 1000;
-    this.timer = setInterval(() => {
-      void this.poll();
-    }, pollMs);
-    void this.poll();
+    if (this.running) {
+      return;
+    }
+
+    this.running = true;
+    this.tlsAgent = this.config.ignoreTls ? new Agent({ connect: { rejectUnauthorized: false } }) : undefined;
+    this.runPoll();
   }
 
-  public stop(): void {
+  public async stop(): Promise<void> {
+    this.running = false;
     if (this.timer) {
-      clearInterval(this.timer);
+      clearTimeout(this.timer);
       this.timer = undefined;
     }
+
+    this.activeRequest?.abort(abortError('Protect polling stopped'));
+    await this.activePoll;
+
+    const tlsAgent = this.tlsAgent;
+    this.tlsAgent = undefined;
+    this.cookie = '';
+    await tlsAgent?.close();
+  }
+
+  private runPoll(): void {
+    if (!this.running || this.activePoll) {
+      return;
+    }
+
+    const activePoll = this.poll();
+    this.activePoll = activePoll;
+    void activePoll.finally(() => {
+      if (this.activePoll === activePoll) {
+        this.activePoll = undefined;
+      }
+      this.schedulePoll();
+    });
+  }
+
+  private schedulePoll(): void {
+    if (!this.running) {
+      return;
+    }
+
+    const pollMs = Math.max(2, this.config?.pollSeconds ?? 5) * 1000;
+    this.timer = setTimeout(() => {
+      this.timer = undefined;
+      this.runPoll();
+    }, pollMs);
   }
 
   private async poll(): Promise<void> {
     try {
       await this.ensureLogin();
       const end = Date.now();
-      const query = new URLSearchParams({
-        start: String(this.lastEvent + 1),
-        end: String(end),
-        limit: '1000',
-        type: 'smartDetectZone',
-        smartDetectTypes: 'person',
-      });
-      const eventsPayload = await this.requestJson(`/proxy/protect/api/events?${query.toString()}`);
-      const events = extractPersonEvents(eventsPayload, this.lastEvent);
+      const start = this.cursorAdvanced
+        ? Math.max(this.eventQueryFloor, this.lastEvent - EVENT_CURSOR_OVERLAP_MS + 1)
+        : this.eventQueryFloor;
+      const batch = await this.fetchEventRange(start, end);
+      const events = dedupeEvents(batch.events)
+        .sort((left, right) => left.timestamp - right.timestamp)
+        .filter((event) => !this.recentEvents.has(eventFingerprint(event)));
       if (events.length > 0) {
         this.logger.info(`UniFi Protect person events found: ${events.length}`);
       }
       for (const event of events) {
-        this.lastEvent = Math.max(this.lastEvent, event.timestamp);
         this.sink(event);
+        this.recentEvents.set(eventFingerprint(event), batch.completedThrough);
       }
-      this.lastEvent = Math.max(this.lastEvent, end - 1000);
+      this.lastEvent = Math.max(this.lastEvent, batch.completedThrough);
+      this.cursorAdvanced = true;
+      this.pruneRecentEvents();
     } catch (error) {
+      if (!this.running) {
+        return;
+      }
       this.logger.warn(`UniFi Protect poll failed: ${error instanceof Error ? error.message : String(error)}`);
     }
+  }
+
+  private pruneRecentEvents(): void {
+    const cutoff = this.lastEvent - EVENT_CURSOR_OVERLAP_MS;
+    for (const [fingerprint, cursorTimestamp] of this.recentEvents) {
+      if (cursorTimestamp < cutoff) {
+        this.recentEvents.delete(fingerprint);
+      }
+    }
+  }
+
+  private async fetchEventRange(start: number, end: number): Promise<ProtectEventBatch> {
+    if (start > end) {
+      return { events: [], completedThrough: end };
+    }
+
+    const events: ProtectPersonEvent[] = [];
+    for (let page = 0; page < MAX_EVENT_PAGES; page += 1) {
+      const payload = await this.requestEventRange(start, end, page * EVENT_PAGE_LIMIT);
+      const records = protectEventRecords(payload);
+      events.push(...extractPersonEvents(payload, start - 1));
+      if (records.length < EVENT_PAGE_LIMIT) {
+        return { events, completedThrough: end };
+      }
+    }
+
+    throw new Error(`Protect event backlog exceeded ${MAX_EVENT_PAGES * EVENT_PAGE_LIMIT} events; refusing to advance cursor`);
+  }
+
+  private async requestEventRange(start: number, end: number, offset: number): Promise<unknown> {
+    const query = new URLSearchParams({
+      start: String(start),
+      end: String(end),
+      limit: String(EVENT_PAGE_LIMIT),
+      offset: String(offset),
+      orderBy: 'start',
+      orderDirection: 'ASC',
+      type: 'smartDetectZone',
+      smartDetectTypes: 'person',
+    });
+    return this.requestJson(`/proxy/protect/api/events?${query.toString()}`);
   }
 
   private async ensureLogin(): Promise<void> {
     if (this.cookie) {
       return;
     }
-    const response = await this.fetchImpl(this.url('/api/auth/login'), {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ username: this.config?.username, password: this.config?.password }),
-      dispatcher: this.tlsAgent,
-    } as FetchOptions);
-    if (!response.ok) {
-      throw new Error(`login failed: ${response.status}`);
+    const response = await this.withRequestTimeout((signal) => this.fetchImpl(
+      this.url('/api/auth/login'),
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ username: this.config?.username, password: this.config?.password }),
+        dispatcher: this.tlsAgent,
+        signal,
+      } as FetchOptions,
+    ));
+    try {
+      if (!response.ok) {
+        throw new Error(`login failed: ${response.status}`);
+      }
+      const cookie = response.headers.get('set-cookie');
+      if (!cookie) {
+        throw new Error('login response did not include cookie');
+      }
+      this.cookie = cookie.split(';')[0] ?? '';
+    } finally {
+      await discardResponseBody(response);
     }
-    const cookie = response.headers.get('set-cookie');
-    if (!cookie) {
-      throw new Error('login response did not include cookie');
-    }
-    this.cookie = cookie.split(';')[0] ?? '';
   }
 
   private async requestJson(path: string): Promise<unknown> {
-    const response = await this.fetchImpl(this.url(path), {
-      headers: { cookie: this.cookie },
-      dispatcher: this.tlsAgent,
-    } as FetchOptions);
-    if (response.status === 401 || response.status === 403) {
-      this.cookie = '';
-      throw new Error('Protect session expired');
+    return this.withRequestTimeout(async (signal) => {
+      const response = await this.fetchImpl(this.url(path), {
+        headers: { cookie: this.cookie },
+        dispatcher: this.tlsAgent,
+        signal,
+      } as FetchOptions);
+      if (response.status === 401 || response.status === 403) {
+        this.cookie = '';
+        await discardResponseBody(response);
+        throw new Error('Protect session expired');
+      }
+      if (!response.ok) {
+        await discardResponseBody(response);
+        throw new Error(`Protect request failed: ${response.status}`);
+      }
+      return response.json() as Promise<unknown>;
+    });
+  }
+
+  private async withRequestTimeout<T>(request: (signal: AbortSignal) => Promise<T>): Promise<T> {
+    if (!this.running) {
+      throw abortError('Protect polling stopped');
     }
-    if (!response.ok) {
-      throw new Error(`Protect request failed: ${response.status}`);
+
+    const controller = new AbortController();
+    this.activeRequest = controller;
+    const timeout = setTimeout(() => {
+      const error = new Error(`Protect request timed out after ${REQUEST_TIMEOUT_MS}ms`);
+      error.name = 'TimeoutError';
+      controller.abort(error);
+    }, REQUEST_TIMEOUT_MS);
+
+    try {
+      return await request(controller.signal);
+    } finally {
+      clearTimeout(timeout);
+      if (this.activeRequest === controller) {
+        this.activeRequest = undefined;
+      }
     }
-    return response.json() as Promise<unknown>;
   }
 
   private url(path: string): string {
@@ -118,6 +255,20 @@ export class UniFiProtectAdapter {
 type FetchOptions = RequestInit & {
   dispatcher?: Agent;
 };
+
+function abortError(message: string): Error {
+  const error = new Error(message);
+  error.name = 'AbortError';
+  return error;
+}
+
+async function discardResponseBody(response: Response): Promise<void> {
+  try {
+    await response.body?.cancel();
+  } catch {
+    // The original request result is more useful than a cleanup failure.
+  }
+}
 
 export function extractPersonEvents(payload: unknown, afterTimestamp = 0): ProtectPersonEvent[] {
   const events: ProtectPersonEvent[] = [];
@@ -140,15 +291,15 @@ export function extractPersonEvents(payload: unknown, afterTimestamp = 0): Prote
 
     if (personThumbnails.length > 0) {
       const directionDegrees = routeDirectionDegrees(value.metadata);
-      for (const thumbnail of personThumbnails) {
+      for (const { thumbnail, identity } of thumbnailDetections(personThumbnails)) {
         const thumbTimestamp = timestampValue(thumbnail.clockBestWall) ?? timestamp;
-        const personId = personIdFromThumbnail(thumbnail) ?? stringValue(value.personId) ?? stringValue(value.faceId) ?? stringValue(value.userId) ?? personName ?? String(value.id ?? `${cameraId}:${thumbTimestamp}`);
+        const personId = personIdFromThumbnails(thumbnail, identity) ?? stringValue(value.personId) ?? stringValue(value.faceId) ?? stringValue(value.userId) ?? personName ?? String(value.id ?? `${cameraId}:${thumbTimestamp}`);
         events.push({
           personId,
-          name: personName ?? nameFromThumbnail(thumbnail),
+          name: nameFromThumbnails(thumbnail, identity, personName),
           cameraId,
           timestamp: thumbTimestamp,
-          confidence: numberValue(thumbnail.confidence) ?? numberValue(value.confidence ?? value.score),
+          confidence: confidenceFromThumbnails(thumbnail, identity) ?? numberValue(value.confidence ?? value.score),
           directionDegrees,
         });
       }
@@ -193,6 +344,31 @@ function dedupeEvents(events: ProtectPersonEvent[]): ProtectPersonEvent[] {
   });
 }
 
+function protectEventRecords(payload: unknown): unknown[] {
+  if (Array.isArray(payload)) {
+    return payload;
+  }
+  if (isRecord(payload) && Array.isArray(payload.events)) {
+    return payload.events;
+  }
+  if (isRecord(payload) && Array.isArray(payload.data)) {
+    return payload.data;
+  }
+  return [];
+}
+
+function eventFingerprint(event: ProtectPersonEvent): string {
+  return JSON.stringify([
+    event.personId,
+    event.name ?? null,
+    event.cameraId,
+    event.timestamp,
+    event.confidence ?? null,
+    event.directionDegrees ?? null,
+    event.path ?? null,
+  ]);
+}
+
 function arrayIncludesPerson(value: unknown): boolean {
   return Array.isArray(value) && value.some((item) => String(item).toLowerCase().includes('person'));
 }
@@ -224,6 +400,13 @@ type Thumbnail = {
   objectId?: string;
   labels?: string[];
   attributes?: Record<string, unknown>;
+  group?: {
+    id?: string;
+    name?: string;
+    matchedName?: string;
+    confidence?: number;
+  };
+  name?: string;
   confidence?: number;
   clockBestWall?: number;
 };
@@ -238,25 +421,136 @@ function detectedThumbnails(value: unknown): Thumbnail[] {
       type: stringValue(thumbnail.type)?.toLowerCase(),
       objectId: stringValue(thumbnail.objectId),
       labels: Array.isArray(thumbnail.labels) ? thumbnail.labels.map(String) : undefined,
-      attributes: isRecord(thumbnail.attributes) ? thumbnail.attributes : undefined,
+      attributes: thumbnailAttributes(thumbnail),
+      group: thumbnailGroup(thumbnail.group),
+      name: stringValue(thumbnail.name),
       confidence: numberValue(thumbnail.confidence),
       clockBestWall: numberValue(thumbnail.clockBestWall),
     }));
 }
 
-function personIdFromThumbnail(thumbnail: Thumbnail): string | undefined {
-  const group = thumbnail.labels?.find((label) => label.startsWith('group:'))?.split(':')[1];
-  const trackerId = numberValue(thumbnail.attributes?.trackerId);
-  const associatedFaceTrackerId = numberValue(thumbnail.attributes?.associatedFaceTrackerID);
-  return group ?? (associatedFaceTrackerId ? `face-tracker-${associatedFaceTrackerId}` : undefined) ?? (trackerId ? `tracker-${trackerId}` : undefined) ?? thumbnail.objectId;
+function thumbnailAttributes(thumbnail: Record<string, unknown>): Record<string, unknown> | undefined {
+  const attrs = isRecord(thumbnail.attrs) ? thumbnail.attrs : undefined;
+  const attributes = isRecord(thumbnail.attributes) ? thumbnail.attributes : undefined;
+  return attrs || attributes ? { ...attrs, ...attributes } : undefined;
 }
 
-function nameFromThumbnail(thumbnail: Thumbnail): string | undefined {
-  const groupType = thumbnail.labels?.find((label) => label.startsWith('groupType:'))?.split(':')[1];
-  if (groupType && groupType !== 'unknown') {
-    return groupType;
+function thumbnailGroup(value: unknown): Thumbnail['group'] {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+  return {
+    id: idValue(value.id),
+    name: stringValue(value.name),
+    matchedName: stringValue(value.matchedName),
+    confidence: numberValue(value.confidence),
+  };
+}
+
+function thumbnailDetections(thumbnails: Thumbnail[]): { thumbnail: Thumbnail; identity?: Thumbnail }[] {
+  const facesByTrackerId = new Map<string, Thumbnail[]>();
+  for (const thumbnail of thumbnails) {
+    if (thumbnail.type !== 'face') {
+      continue;
+    }
+    const trackerId = trackerIdFromThumbnail(thumbnail);
+    if (trackerId) {
+      facesByTrackerId.set(trackerId, [...(facesByTrackerId.get(trackerId) ?? []), thumbnail]);
+    }
+  }
+
+  const identities = new Map<Thumbnail, Thumbnail>();
+  const matchedFaces = new Set<Thumbnail>();
+  for (const thumbnail of thumbnails) {
+    if (thumbnail.type !== 'person') {
+      continue;
+    }
+    const associatedFaceTrackerId = idValue(thumbnail.attributes?.associatedFaceTrackerID);
+    const identity = associatedFaceTrackerId
+      ? facesByTrackerId.get(associatedFaceTrackerId)?.find((face) => !matchedFaces.has(face))
+      : undefined;
+    if (identity) {
+      identities.set(thumbnail, identity);
+      matchedFaces.add(identity);
+    }
+  }
+
+  return thumbnails.flatMap((thumbnail) => {
+    if (matchedFaces.has(thumbnail)) {
+      return [];
+    }
+    return [{ thumbnail, identity: identities.get(thumbnail) }];
+  });
+}
+
+function personIdFromThumbnails(thumbnail: Thumbnail, identity?: Thumbnail): string | undefined {
+  const candidates = identity ? [identity, thumbnail] : [thumbnail];
+  for (const candidate of candidates) {
+    if (candidate.group?.id) {
+      return candidate.group.id;
+    }
+  }
+  for (const candidate of candidates) {
+    const legacyGroup = labelValue(candidate.labels, 'group:');
+    if (legacyGroup) {
+      return legacyGroup;
+    }
+  }
+  for (const candidate of candidates) {
+    const trackerId = trackerIdFromThumbnail(candidate);
+    if (trackerId) {
+      return 'tracker-' + trackerId;
+    }
+  }
+  return candidates.find((candidate) => candidate.objectId)?.objectId;
+}
+
+function nameFromThumbnails(thumbnail: Thumbnail, identity?: Thumbnail, eventName?: string): string {
+  const candidates = identity ? [identity, thumbnail] : [thumbnail];
+  for (const candidate of candidates) {
+    const name = candidate.group?.matchedName ?? candidate.group?.name ?? candidate.name;
+    if (name) {
+      return name;
+    }
+  }
+  if (eventName) {
+    return eventName;
+  }
+  for (const candidate of candidates) {
+    const groupType = labelValue(candidate.labels, 'groupType:');
+    if (groupType && groupType.toLowerCase() !== 'unknown') {
+      return groupType;
+    }
   }
   return thumbnail.type === 'face' ? 'Face' : 'Person';
+}
+
+function confidenceFromThumbnails(thumbnail: Thumbnail, identity?: Thumbnail): number | undefined {
+  const candidates = identity ? [identity, thumbnail] : [thumbnail];
+  for (const candidate of candidates) {
+    if (candidate.group?.confidence !== undefined) {
+      return candidate.group.confidence;
+    }
+  }
+  for (const candidate of candidates) {
+    if (candidate.confidence !== undefined) {
+      return candidate.confidence;
+    }
+  }
+  return undefined;
+}
+
+function trackerIdFromThumbnail(thumbnail: Thumbnail): string | undefined {
+  return idValue(thumbnail.attributes?.trackerId);
+}
+
+function labelValue(labels: string[] | undefined, prefix: string): string | undefined {
+  const label = labels?.find((candidate) => candidate.startsWith(prefix));
+  return label ? stringValue(label.slice(prefix.length)) : undefined;
+}
+
+function idValue(value: unknown): string | undefined {
+  return stringValue(value) ?? (typeof value === 'number' && Number.isFinite(value) ? String(value) : undefined);
 }
 
 function routeDirectionDegrees(metadata: unknown): number | undefined {

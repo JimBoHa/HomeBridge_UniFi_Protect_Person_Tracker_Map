@@ -27,13 +27,33 @@ export class TrackerHttpServer {
   ) {}
 
   public async start(host: string, port: number): Promise<number> {
-    this.server = createServer((request, response) => {
+    const server = createServer((request, response) => {
       void this.handle(request, response);
     });
-    await new Promise<void>((resolve) => {
-      this.server?.listen(port, host, resolve);
-    });
-    const address = this.server.address();
+    this.server = server;
+    const handleRuntimeError = (error: Error): void => {
+      this.logger.error(`Tracker HTTP server error: ${error.message}`);
+    };
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const handleBindError = (error: Error): void => {
+          server.removeListener('listening', handleListening);
+          reject(error);
+        };
+        const handleListening = (): void => {
+          server.removeListener('error', handleBindError);
+          server.on('error', handleRuntimeError);
+          resolve();
+        };
+        server.once('error', handleBindError);
+        server.once('listening', handleListening);
+        server.listen(port, host);
+      });
+    } catch (error) {
+      this.server = undefined;
+      throw error;
+    }
+    const address = server.address();
     const actualPort = typeof address === 'object' && address ? address.port : port;
     this.logger.info(`Person tracker map HTTP server listening on ${host}:${actualPort}`);
     return actualPort;
@@ -51,7 +71,8 @@ export class TrackerHttpServer {
 
   private async handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
     try {
-      if (request.method === 'GET' && request.url === '/snapshot.png') {
+      const pathname = (request.url ?? '/').split('?', 1)[0];
+      if (request.method === 'GET' && pathname === '/snapshot.png') {
         const png = await this.renderer.renderPng(this.tracker.snapshot());
         response.writeHead(200, {
           'content-type': 'image/png',
@@ -61,7 +82,7 @@ export class TrackerHttpServer {
         return;
       }
 
-      if (request.method === 'GET' && request.url === '/state') {
+      if (request.method === 'GET' && pathname === '/state') {
         if (!this.isAuthorized(request)) {
           writeJson(response, 401, { error: 'unauthorized' });
           return;
@@ -70,7 +91,16 @@ export class TrackerHttpServer {
         return;
       }
 
-      if (request.method === 'POST' && request.url === '/events') {
+      if (request.method === 'GET' && pathname === '/map-config') {
+        if (!this.isAuthorized(request)) {
+          writeJson(response, 401, { error: 'unauthorized' });
+          return;
+        }
+        writeJson(response, 200, this.tracker.snapshot().map);
+        return;
+      }
+
+      if (request.method === 'POST' && pathname === '/events') {
         if (!this.isAuthorized(request)) {
           writeJson(response, 401, { error: 'unauthorized' });
           return;
@@ -81,7 +111,7 @@ export class TrackerHttpServer {
         return;
       }
 
-      if (request.method === 'POST' && request.url === '/map-config') {
+      if (request.method === 'POST' && pathname === '/map-config') {
         if (!this.isAuthorized(request)) {
           writeJson(response, 401, { error: 'unauthorized' });
           return;

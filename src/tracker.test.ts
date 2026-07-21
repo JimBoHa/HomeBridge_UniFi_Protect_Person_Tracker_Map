@@ -29,6 +29,30 @@ describe('PersonTracker', () => {
     expect(snapshot.people[0]?.position.y).toBeCloseTo(150, 1);
   });
 
+  it('does not let stale events overwrite newer positions', () => {
+    const tracker = new PersonTracker(map, 60_000, () => 2_000);
+    tracker.ingest({ personId: 'p1', name: 'Ada', cameraId: 'hall', timestamp: 2_000 });
+
+    const returned = tracker.ingest({ personId: 'p1', cameraId: 'front', timestamp: 1_000 });
+    const [person] = tracker.snapshot().people;
+
+    expect(returned).toMatchObject({ timestamp: 2_000, sourceCameraId: 'hall' });
+    expect(person).toMatchObject({ timestamp: 2_000, sourceCameraId: 'hall', name: 'Ada' });
+  });
+
+  it('accepts same-timestamp identity enrichment', () => {
+    const tracker = new PersonTracker(map, 60_000, () => 2_000);
+    tracker.ingest({ personId: 'p1', cameraId: 'front', timestamp: 2_000 });
+    tracker.ingest({ personId: 'p1', name: 'Ada', cameraId: 'hall', timestamp: 2_000, confidence: 0.97 });
+
+    expect(tracker.snapshot().people[0]).toMatchObject({
+      name: 'Ada',
+      confidence: 0.97,
+      sourceCameraId: 'hall',
+      timestamp: 2_000,
+    });
+  });
+
   it('derives direction from path and clamps map bounds', () => {
     const tracker = new PersonTracker(map, 60_000, () => 1_000);
     const person = tracker.ingest({
@@ -63,6 +87,132 @@ describe('PersonTracker', () => {
     tracker.ingest({ personId: 'new', cameraId: 'front', timestamp: 950 });
 
     expect(tracker.snapshot().people.map((person) => person.personId)).toEqual(['new']);
+  });
+
+  it('does not inherit state when an id returns after ttl without a snapshot', () => {
+    let now = 1_000;
+    const tracker = new PersonTracker(map, 100, () => now, 3);
+    tracker.ingest({ personId: 'p1', name: 'Ada', cameraId: 'hall', timestamp: now, path: [{ x: 10, y: 10 }] });
+    now = 1_050;
+    tracker.ingest({ personId: 'p1', cameraId: 'hall', timestamp: now, path: [{ x: 40, y: 10 }] });
+
+    now = 1_200;
+    const returned = tracker.ingest({ personId: 'p1', cameraId: 'hall', timestamp: now, path: [{ x: 80, y: 10 }] });
+
+    expect(returned.name).toBe('p1');
+    expect(returned.trail).toEqual([]);
+  });
+
+  it('releases color assignments when people expire', () => {
+    let now = 1_000;
+    const tracker = new PersonTracker(map, 100, () => now);
+    for (let index = 0; index < 50; index += 1) {
+      tracker.ingest({ personId: `front:${index}`, cameraId: 'front', timestamp: now });
+      now += 10;
+    }
+
+    now += 1_000;
+    expect(tracker.snapshot().people).toHaveLength(0);
+    const colors = (tracker as unknown as { colors: Map<string, string> }).colors;
+    expect(colors.size).toBe(0);
+  });
+
+  it('reuses the first available color without colliding with active people', () => {
+    let now = 1_000;
+    const tracker = new PersonTracker(map, 100, () => now);
+    const expired = tracker.ingest({ personId: 'expired', cameraId: 'front', timestamp: now });
+
+    now = 1_050;
+    const active = tracker.ingest({ personId: 'active', cameraId: 'front', timestamp: now });
+    now = 1_110;
+    expect(tracker.snapshot().people.map((person) => person.personId)).toEqual(['active']);
+
+    const newcomer = tracker.ingest({ personId: 'newcomer', cameraId: 'front', timestamp: now });
+    const activeColors = tracker.snapshot().people.map((person) => person.color);
+    expect(newcomer.color).toBe(expired.color);
+    expect(newcomer.color).not.toBe(active.color);
+    expect(new Set(activeColors).size).toBe(activeColors.length);
+  });
+
+  it('notifies person seen listeners on ingest', () => {
+    const tracker = new PersonTracker(map, 60_000, () => 1_000);
+    const seen: string[] = [];
+    tracker.onPersonSeen((person) => seen.push(person.personId));
+
+    tracker.ingest({ personId: 'p1', cameraId: 'front', timestamp: 1_000 });
+    tracker.ingest({ personId: 'p2', cameraId: 'hall', timestamp: 1_000 });
+
+    expect(seen).toEqual(['p1', 'p2']);
+  });
+
+  it('respects per-camera field of view when clamping directions', () => {
+    const wideMap: MapConfig = {
+      ...map,
+      cameras: [
+        { id: 'wide', name: 'Wide', position: { x: 100, y: 50 }, headingDegrees: 90, fovDegrees: 180 },
+        { id: 'full', name: 'Full', position: { x: 100, y: 50 }, headingDegrees: 90, fovDegrees: 360 },
+      ],
+    };
+
+    const tracker = new PersonTracker(wideMap, 60_000, () => 1_000);
+    const wide = tracker.ingest({ personId: 'p1', cameraId: 'wide', timestamp: 1_000, directionDegrees: 200 });
+    expect(wide.directionDegrees).toBe(180);
+
+    const full = tracker.ingest({ personId: 'p2', cameraId: 'full', timestamp: 1_000, directionDegrees: 280 });
+    expect(full.directionDegrees).toBe(280);
+  });
+
+  it('records a bounded movement trail of prior positions', () => {
+    const tracker = new PersonTracker(map, 60_000, () => 1_000, 3);
+    tracker.ingest({ personId: 'p1', cameraId: 'hall', timestamp: 1_000, path: [{ x: 10, y: 10 }] });
+    tracker.ingest({ personId: 'p1', cameraId: 'hall', timestamp: 1_100, path: [{ x: 40, y: 10 }] });
+    tracker.ingest({ personId: 'p1', cameraId: 'hall', timestamp: 1_200, path: [{ x: 80, y: 10 }] });
+    tracker.ingest({ personId: 'p1', cameraId: 'hall', timestamp: 1_300, path: [{ x: 120, y: 10 }] });
+    const person = tracker.ingest({ personId: 'p1', cameraId: 'hall', timestamp: 1_400, path: [{ x: 160, y: 10 }] });
+
+    expect(person.trail).toEqual([
+      { x: 40, y: 10 },
+      { x: 80, y: 10 },
+      { x: 120, y: 10 },
+    ]);
+  });
+
+  it('does not add trail points for repeated positions', () => {
+    const tracker = new PersonTracker(map, 60_000, () => 2_000, 3);
+    tracker.ingest({ personId: 'p1', cameraId: 'hall', timestamp: 1_000, path: [{ x: 10, y: 10 }] });
+    tracker.ingest({ personId: 'p1', cameraId: 'hall', timestamp: 1_100, path: [{ x: 10, y: 10 }] });
+    tracker.ingest({ personId: 'p1', cameraId: 'hall', timestamp: 1_200, path: [{ x: 40, y: 10 }] });
+    tracker.ingest({ personId: 'p1', cameraId: 'hall', timestamp: 1_300, path: [{ x: 40, y: 10 }] });
+    const person = tracker.ingest({ personId: 'p1', cameraId: 'hall', timestamp: 1_400, path: [{ x: 80, y: 10 }] });
+
+    expect(person.trail).toEqual([{ x: 10, y: 10 }, { x: 40, y: 10 }]);
+  });
+
+  it('starts a new trail after a fifteen-minute gap', () => {
+    const tracker = new PersonTracker(map, 2_000_000, () => 1_000_000, 3);
+    tracker.ingest({ personId: 'p1', cameraId: 'hall', timestamp: 1_000, path: [{ x: 10, y: 10 }] });
+    const afterGap = tracker.ingest({
+      personId: 'p1',
+      cameraId: 'hall',
+      timestamp: 1_000 + 15 * 60 * 1000 + 1,
+      path: [{ x: 40, y: 10 }],
+    });
+    const next = tracker.ingest({
+      personId: 'p1',
+      cameraId: 'hall',
+      timestamp: afterGap.timestamp + 1,
+      path: [{ x: 80, y: 10 }],
+    });
+
+    expect(afterGap.trail).toEqual([]);
+    expect(next.trail).toEqual([{ x: 40, y: 10 }]);
+  });
+
+  it('omits trails by default', () => {
+    const tracker = new PersonTracker(map, 60_000, () => 1_000);
+    tracker.ingest({ personId: 'p1', cameraId: 'front', timestamp: 1_000 });
+    const person = tracker.ingest({ personId: 'p1', cameraId: 'front', timestamp: 1_100 });
+    expect(person.trail).toBeUndefined();
   });
 
   it('rejects unknown cameras', () => {

@@ -14,7 +14,7 @@
     "camera"
   ],
   "engines": {
-    "node": ">=20.0.0",
+    "node": ">=20.18.1",
     "homebridge": ">=1.8.0 || >=2.0.0"
   },
   "files": [
@@ -29,24 +29,24 @@
     "test:coverage": "vitest run --coverage",
     "lint": "eslint .",
     "prepare": "npm run build",
-    "security": "npm audit --audit-level=moderate --omit=dev",
+    "security": "npm audit --audit-level=moderate",
     "verify": "npm run build && npm run lint && npm test && npm run security"
   },
   "dependencies": {
     "@homebridge/plugin-ui-utils": "^2.2.4",
     "pdfjs-dist": "^4.10.38",
     "pureimage": "0.4.18",
-    "undici": "^7.16.0",
+    "undici": "^7.28.0",
     "zod": "4.1.7"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
-    "@vitest/coverage-v8": "4.0.13",
+    "@vitest/coverage-v8": "4.1.10",
     "eslint": "10.4.0",
     "homebridge": "2.0.2",
     "typescript": "6.0.3",
     "typescript-eslint": "^8.0.0",
-    "vitest": "4.0.13"
+    "vitest": "4.1.10"
   },
   "peerDependencies": {
     "homebridge": ">=1.8.0 || >=2.0.0"

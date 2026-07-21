@@ -22,6 +22,7 @@ describe('MapRenderer', () => {
         timestamp: Date.parse('2026-05-24T12:00:00.000Z'),
         directionDegrees: 45,
         sourceCameraId: 'front',
+        trail: [{ x: 40, y: 40 }, { x: 70, y: 55 }],
       }],
     };
 
@@ -49,6 +50,55 @@ describe('MapRenderer', () => {
       people: [],
     });
     expect(png.subarray(0, 8).toString('hex')).toBe('89504e470d0a1a0a');
+  });
+
+  it('renders a coverage wedge only when field of view is explicitly configured', async () => {
+    const renderer = new MapRenderer();
+    const snapshot = (camera: TrackerSnapshot['map']['cameras'][number]): TrackerSnapshot => ({
+      generatedAt: Date.parse('2026-05-24T12:00:00.000Z'),
+      map: { width: 160, height: 100, cameras: [camera] },
+      people: [],
+    });
+    const camera = { id: 'front', name: 'Front', position: { x: 80, y: 40 } };
+
+    const withoutHeading = await renderer.renderRawRgba(snapshot(camera), 160, 100);
+    const legacyHeading = await renderer.renderRawRgba(snapshot({ ...camera, headingDegrees: 90 }), 160, 100);
+    const explicitFov = await renderer.renderRawRgba(snapshot({ ...camera, headingDegrees: 90, fovDegrees: 120 }), 160, 100);
+
+    expect(legacyHeading).toEqual(withoutHeading);
+    expect(explicitFov).not.toEqual(legacyHeading);
+  });
+
+  it('renders every trail below every current marker', async () => {
+    const width = 120;
+    const height = 100;
+    const renderer = new MapRenderer();
+    const rgba = await renderer.renderRawRgba({
+      generatedAt: Date.now(),
+      map: { width, height, cameras: [] },
+      people: [
+        {
+          personId: 'first',
+          name: 'First',
+          color: '#d7263d',
+          position: { x: 50, y: 50 },
+          timestamp: Date.now(),
+          sourceCameraId: 'front',
+        },
+        {
+          personId: 'second',
+          name: 'Second',
+          color: '#1b998b',
+          position: { x: 90, y: 50 },
+          timestamp: Date.now(),
+          sourceCameraId: 'hall',
+          trail: [{ x: 10, y: 50 }],
+        },
+      ],
+    }, width, height);
+    const firstMarkerCenter = (50 * width + 50) * 4;
+
+    expect([...rgba.subarray(firstMarkerCenter, firstMarkerCenter + 4)]).toEqual([215, 38, 61, 255]);
   });
 });
 

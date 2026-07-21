@@ -38,6 +38,8 @@ Open the plugin settings in Homebridge to upload a PNG, JPEG, or PDF map, discov
 
 `adminToken` protects `/state`, `/events`, and `/map-config`. Do not expose the HTTP server to the internet.
 
+Enable the HomeKit motion sensor in the plugin settings (or set `"motionSensor": true`). It triggers for current person detections from the Protect poller or `/events` and remains active until `motionResetSeconds` after the newest detection timestamp (default 30). Expired replayed events do not trigger or extend it.
+
 ## Map Config
 
 ```json
@@ -49,13 +51,20 @@ Open the plugin settings in Homebridge to upload a PNG, JPEG, or PDF map, discov
       "id": "camera-id-from-protect",
       "name": "Front Door",
       "position": { "x": 240, "y": 180 },
-      "headingDegrees": 90
+      "headingDegrees": 90,
+      "fovDegrees": 110
     }
   ]
 }
 ```
 
+`fovDegrees` (optional, 10-360) sets each camera's horizontal field of view. Detections are projected into this cone around `headingDegrees`; use wider values for wide-angle or fisheye cameras (`360` disables the cone entirely). When omitted, projection keeps the legacy 90-degree default and no coverage wedge is drawn. Setting it renders a translucent FOV wedge on the map and in the custom UI preview.
+
 Coordinates use the rendered map pixel space. If Protect supplies a path or direction, the marker arrow uses it. Otherwise the plugin extrapolates from previous camera position or camera heading.
+
+When `mapConfigPath` is used without an inline `mapConfig`, the settings editor previews that file and credential-only edits preserve the path-backed configuration. Editing map placement or scale in the UI stages an inline `mapConfig`, which takes runtime precedence.
+
+Optionally, each person can carry a movement trail of recent positions, drawn as a fading line in the person's color. Configure the trail length with `trailPoints` (`0`, the default, disables trails; maximum 64). A gap longer than 15 minutes starts a new trail. Enabled trails are included in `/state` responses as `trail` per person.
 
 ## Event Ingestion
 

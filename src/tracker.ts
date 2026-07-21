@@ -1,4 +1,4 @@
-import type { CameraPlacement, MapConfig, PersonPosition, ProtectPersonEvent, TrackerSnapshot } from './types.js';
+import type { CameraPlacement, MapConfig, PersonPosition, Point, ProtectPersonEvent, TrackerSnapshot } from './types.js';
 
 const palette = [
   '#d7263d',
@@ -15,24 +15,38 @@ const palette = [
 
 const DEFAULT_CAMERA_PROJECTION_FEET = 10;
 const FOV_WIDTH_DEGREES = 90;
+const TRAIL_MAX_GAP_MS = 15 * 60 * 1000;
+
+export type PersonSeenListener = (person: PersonPosition) => void;
 
 export class PersonTracker {
   private readonly people = new Map<string, PersonPosition>();
   private readonly colors = new Map<string, string>();
+  private readonly listeners: PersonSeenListener[] = [];
 
   public constructor(
     private map: MapConfig,
     private readonly ttlMs: number,
     private readonly now: () => number = Date.now,
+    private readonly trailPoints = 0,
   ) {}
 
   public setMap(map: MapConfig): void {
     this.map = map;
   }
 
+  public onPersonSeen(listener: PersonSeenListener): void {
+    this.listeners.push(listener);
+  }
+
   public ingest(event: ProtectPersonEvent): PersonPosition {
-    const camera = this.findCamera(event.cameraId);
+    this.expire();
     const previous = this.people.get(event.personId);
+    if (previous && event.timestamp < previous.timestamp) {
+      return previous;
+    }
+
+    const camera = this.findCamera(event.cameraId);
     const directionDegrees = this.clampToCameraFov(event.directionDegrees ?? this.deriveDirection(event.path, camera, previous), camera);
     const position = event.path?.at(-1)
       ? this.projectPointIntoCameraFov(camera, event.path.at(-1) as { x: number; y: number })
@@ -46,10 +60,14 @@ export class PersonTracker {
       directionDegrees,
       sourceCameraId: event.cameraId,
       confidence: event.confidence,
+      trail: this.buildTrail(previous, this.clamp(position), event.timestamp),
     };
 
     this.people.set(event.personId, person);
     this.expire();
+    for (const listener of this.listeners) {
+      listener(person);
+    }
     return person;
   }
 
@@ -112,12 +130,34 @@ export class PersonTracker {
     });
   }
 
+  private buildTrail(previous: PersonPosition | undefined, position: Point, timestamp: number): Point[] | undefined {
+    if (this.trailPoints <= 0) {
+      return undefined;
+    }
+    if (!previous || timestamp - previous.timestamp > TRAIL_MAX_GAP_MS) {
+      return [];
+    }
+    const trail = [...(previous.trail ?? [])];
+    if (pointDistance(previous.position, position) <= 0.5) {
+      return trail;
+    }
+    const last = trail.at(-1);
+    if (!last || pointDistance(last, previous.position) > 0.5) {
+      trail.push(previous.position);
+    }
+    return trail.slice(-this.trailPoints);
+  }
+
   private clampToCameraFov(directionDegrees: number | undefined, camera: CameraPlacement): number | undefined {
     if (typeof directionDegrees !== 'number' || typeof camera.headingDegrees !== 'number') {
       return directionDegrees;
     }
 
-    const halfFov = FOV_WIDTH_DEGREES / 2;
+    const fov = camera.fovDegrees ?? FOV_WIDTH_DEGREES;
+    if (fov >= 360) {
+      return normalizeDegrees(directionDegrees);
+    }
+    const halfFov = fov / 2;
     const delta = signedAngleDelta(camera.headingDegrees, directionDegrees);
     return normalizeDegrees(camera.headingDegrees + Math.max(-halfFov, Math.min(halfFov, delta)));
   }
@@ -137,7 +177,8 @@ export class PersonTracker {
       return existing;
     }
 
-    const color = palette[this.colors.size % palette.length];
+    const usedColors = new Set(this.colors.values());
+    const color = palette.find((candidate) => !usedColors.has(candidate)) ?? palette[this.colors.size % palette.length];
     this.colors.set(personId, color);
     return color;
   }
@@ -147,6 +188,7 @@ export class PersonTracker {
     for (const [personId, person] of this.people.entries()) {
       if (person.timestamp < cutoff) {
         this.people.delete(personId);
+        this.colors.delete(personId);
       }
     }
   }
@@ -157,6 +199,10 @@ export class PersonTracker {
       y: Math.min(this.map.height, Math.max(0, point.y)),
     };
   }
+}
+
+function pointDistance(first: Point, second: Point): number {
+  return Math.hypot(first.x - second.x, first.y - second.y);
 }
 
 export function normalizeDegrees(value: number): number {

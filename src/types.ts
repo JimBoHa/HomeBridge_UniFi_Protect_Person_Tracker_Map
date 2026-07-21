@@ -8,6 +8,7 @@ export type CameraPlacement = {
   name: string;
   position: Point;
   headingDegrees?: number;
+  fovDegrees?: number;
 };
 
 export type MapConfig = {
@@ -42,6 +43,7 @@ export type PersonPosition = {
   directionDegrees?: number;
   sourceCameraId: string;
   confidence?: number;
+  trail?: Point[];
 };
 
 export type TrackerSnapshot = {
@@ -70,6 +72,9 @@ export type PluginConfig = {
   protect?: ProtectConfig;
   peopleTtlSeconds?: number;
   ffmpegPath?: string;
+  motionSensor?: boolean;
+  motionResetSeconds?: number;
+  trailPoints?: number;
 };
 
 export type Logger = {

@@ -42,7 +42,14 @@
         <label><span>Username</span><input id="protect-username" class="form-control" type="text" autocomplete="username"></label>
         <label><span>Password</span><input id="protect-password" class="form-control" type="password" autocomplete="current-password"></label>
         <label><span>Poll seconds</span><input id="protect-poll" class="form-control" type="number" min="2" step="1"></label>
+        <label><span>Trail points (0 disables)</span><input id="trail-points" class="form-control" type="number" min="0" max="64" step="1"></label>
         <label class="check"><input id="protect-ignore-tls" type="checkbox"><span>Ignore TLS certificate errors</span></label>
+      </div>
+
+      <div class="section-title">HomeKit automation</div>
+      <div class="field-grid">
+        <label class="check"><input id="motion-sensor" type="checkbox"><span>Expose person motion sensor</span></label>
+        <label><span>Clear after seconds</span><input id="motion-reset" class="form-control" type="number" min="5" max="3600" step="1"></label>
       </div>
 
       <div class="section-title">Scale</div>
@@ -73,6 +80,7 @@
   const DEFAULT_MAP = { width: 1280, height: 720, cameras: [] };
   const REQUEST_TIMEOUT_MS = 20000;
   const STAGE_TIMEOUT_MS = 30000;
+  const MAX_TRAIL_POINTS = 64;
   const state = {
     blocks: [],
     config: null,
@@ -83,6 +91,8 @@
     scaleMode: false,
     scalePoints: [],
     dirty: false,
+    mapDirty: false,
+    mapLoadedFromPath: false,
     stageTimer: null,
     staging: false,
   };
@@ -92,10 +102,11 @@
   const ctx = canvas.getContext('2d');
   const fields = {
     name: el('name'), host: el('protect-host'), username: el('protect-username'), password: el('protect-password'),
-    poll: el('protect-poll'), ignoreTls: el('protect-ignore-tls'), file: el('map-file'), status: el('status'),
+    poll: el('protect-poll'), trailPoints: el('trail-points'), ignoreTls: el('protect-ignore-tls'), file: el('map-file'), status: el('status'),
     discover: el('discover'), addCamera: el('add-camera'), cameraList: el('camera-list'), deleteConfig: el('delete-config'),
     selectedLabel: el('selected-label'), setScale: el('set-scale'), scalePixels: el('scale-pixels'),
     scaleDistance: el('scale-distance'), scaleUnit: el('scale-unit'), scaleHint: el('scale-hint'),
+    motionSensor: el('motion-sensor'), motionReset: el('motion-reset'),
   };
 
   const setStatus = (message) => { fields.status.textContent = message; };
@@ -103,6 +114,18 @@
     state.dirty = true;
     setStatus(message);
     queueStageConfig();
+  };
+  const markMapDirty = (message) => {
+    state.mapDirty = true;
+    markDirty(message);
+  };
+  const errorMessage = (error) => {
+    try {
+      if (error && typeof error === 'object' && typeof error.message === 'string') return error.message;
+      return String(error);
+    } catch {
+      return 'Unknown error';
+    }
   };
   const clamp = (value, min, max) => Number.isFinite(value) ? Math.max(min, Math.min(max, value)) : min;
   const sanitizeId = (value) => value.trim().replace(/[^A-Za-z0-9_.:-]/g, '-').slice(0, 128);
@@ -122,6 +145,9 @@
       name: 'Person Tracker Map',
       peopleTtlSeconds: 86400,
       ffmpegPath: 'ffmpeg',
+      motionSensor: false,
+      motionResetSeconds: 30,
+      trailPoints: 0,
       protect: { ignoreTls: true, pollSeconds: 5 },
       ...existing,
     };
@@ -133,7 +159,11 @@
     fields.username.value = state.config.protect?.username ?? '';
     fields.password.value = state.config.protect?.password ?? '';
     fields.poll.value = String(state.config.protect?.pollSeconds ?? 5);
+    fields.trailPoints.value = String(state.config.trailPoints ?? 0);
     fields.ignoreTls.checked = Boolean(state.config.protect?.ignoreTls);
+    fields.motionSensor.checked = Boolean(state.config.motionSensor);
+    fields.motionReset.value = String(state.config.motionResetSeconds ?? 30);
+    syncMotionControls();
     fields.scalePixels.value = state.map.scale?.pixels ? String(Math.round(state.map.scale.pixels)) : '';
     fields.scaleDistance.value = state.map.scale?.distance ? String(state.map.scale.distance) : '';
     fields.scaleUnit.value = state.map.scale?.unit ?? 'ft';
@@ -141,6 +171,9 @@
 
   function syncConfigFromInputs() {
     state.config.name = fields.name.value.trim() || 'Person Tracker Map';
+    const trailPoints = Number(fields.trailPoints.value);
+    state.config.trailPoints = Number.isInteger(trailPoints) ? clamp(trailPoints, 0, MAX_TRAIL_POINTS) : 0;
+    fields.trailPoints.value = String(state.config.trailPoints);
     state.config.protect = {
       ...(state.config.protect ?? {}),
       host: fields.host.value.trim() || undefined,
@@ -149,15 +182,26 @@
       ignoreTls: fields.ignoreTls.checked,
       pollSeconds: Math.max(2, Number.parseInt(fields.poll.value, 10) || 5),
     };
+    state.config.motionSensor = fields.motionSensor.checked;
+    state.config.motionResetSeconds = clamp(Number.parseInt(fields.motionReset.value, 10) || 30, 5, 3600);
     const pixels = Number.parseFloat(fields.scalePixels.value);
     const distance = Number.parseFloat(fields.scaleDistance.value);
     state.map.scale = pixels > 0 && distance > 0 ? { pixels, distance, unit: fields.scaleUnit.value } : undefined;
-    state.config.mapConfig = {
+    const mapConfig = {
       width: state.map.width,
       height: state.map.height,
       scale: state.map.scale,
       cameras: state.map.cameras.filter((camera) => camera.position),
     };
+    if (state.mapLoadedFromPath && !state.mapDirty) {
+      delete state.config.mapConfig;
+    } else {
+      state.config.mapConfig = mapConfig;
+    }
+  }
+
+  function syncMotionControls() {
+    fields.motionReset.disabled = !fields.motionSensor.checked;
   }
 
   function buildBlocks() {
@@ -176,7 +220,10 @@
   }
 
   async function stageConfig(message = 'Changes staged. Use the Homebridge Save button at the bottom to persist.') {
-    if (state.staging) return;
+    if (state.staging) {
+      queueStageConfig();
+      return;
+    }
     state.staging = true;
     try {
       state.blocks = await withTimeout(
@@ -185,6 +232,10 @@
         STAGE_TIMEOUT_MS,
       );
       setStatus(message);
+    } catch (error) {
+      const message = errorMessage(error);
+      setStatus(`Staging failed: ${message}`);
+      homebridge.toast.error(message, 'Staging failed');
     } finally {
       state.staging = false;
     }
@@ -226,6 +277,7 @@
     for (const camera of state.map.cameras) {
       if (!camera.position) continue;
       const selected = camera.id === state.selectedId;
+      drawFovWedge(camera, selected);
       ctx.fillStyle = selected ? '#dc2626' : '#1d4ed8';
       ctx.beginPath();
       ctx.arc(camera.position.x, camera.position.y, selected ? 11 : 9, 0, Math.PI * 2);
@@ -242,6 +294,23 @@
       ctx.arc(state.scalePoints[0].x, state.scalePoints[0].y, 6, 0, Math.PI * 2);
       ctx.fill();
     }
+  }
+
+  function drawFovWedge(camera, selected) {
+    if (typeof camera.headingDegrees !== 'number' || typeof camera.fovDegrees !== 'number') return;
+    const fov = clamp(camera.fovDegrees, 10, 360);
+    const radius = 60;
+    const startDegrees = camera.headingDegrees - fov / 2;
+    const stepCount = Math.max(8, Math.ceil(fov / 5));
+    ctx.fillStyle = selected ? 'rgba(220, 38, 38, 0.14)' : 'rgba(29, 78, 216, 0.12)';
+    ctx.beginPath();
+    ctx.moveTo(camera.position.x, camera.position.y);
+    for (let step = 0; step <= stepCount; step += 1) {
+      const radians = (startDegrees + (fov * step) / stepCount) * Math.PI / 180;
+      ctx.lineTo(camera.position.x + Math.cos(radians) * radius, camera.position.y + Math.sin(radians) * radius);
+    }
+    ctx.closePath();
+    ctx.fill();
   }
 
   function drawHeading(camera, color) {
@@ -275,9 +344,17 @@
   }
 
   function placeCamera(camera, indexOffset = 0) {
-    camera.position = camera.position ?? nextCameraPosition(indexOffset);
-    camera.headingDegrees ??= 0;
+    let changed = false;
+    if (!camera.position) {
+      camera.position = nextCameraPosition(indexOffset);
+      changed = true;
+    }
+    if (typeof camera.headingDegrees !== 'number') {
+      camera.headingDegrees = 0;
+      changed = true;
+    }
     state.selectedId = camera.id;
+    return changed;
   }
 
   function renderCameraRows() {
@@ -288,7 +365,11 @@
       row.className = `camera-row${camera.id === state.selectedId ? ' selected' : ''}${camera.position ? '' : ' unplaced'}`;
       row.draggable = true;
       row.addEventListener('dragstart', (event) => event.dataTransfer.setData('text/plain', camera.id));
-      row.addEventListener('click', () => { placeCamera(camera); markDirty(); renderCameraRows(); draw(); });
+      row.addEventListener('click', () => {
+        if (placeCamera(camera)) markMapDirty();
+        renderCameraRows();
+        draw();
+      });
 
       const group = document.createElement('div');
       group.className = 'camera-row-fields';
@@ -297,31 +378,39 @@
           const next = sanitizeId(value);
           if (next && !state.map.cameras.some((item) => item !== camera && item.id === next)) {
             if (state.selectedId === camera.id) state.selectedId = next;
-            camera.id = next; markDirty(); renderCameraRows(); draw();
+            camera.id = next; markMapDirty(); renderCameraRows(); draw();
           }
         }),
-        labeledInput('Name', camera.name, (value) => { camera.name = value.trim() || camera.id; markDirty(); draw(); }),
+        labeledInput('Name', camera.name, (value) => { camera.name = value.trim() || camera.id; markMapDirty(); draw(); }),
         labeledNumber('X', camera.position?.x ?? '', (value) => {
           camera.position ??= { x: 0, y: 0 };
-          camera.position.x = clamp(value, 0, state.map.width); markDirty(); draw();
+          camera.position.x = clamp(value, 0, state.map.width); markMapDirty(); draw();
         }),
         labeledNumber('Y', camera.position?.y ?? '', (value) => {
           camera.position ??= { x: 0, y: 0 };
-          camera.position.y = clamp(value, 0, state.map.height); markDirty(); draw();
+          camera.position.y = clamp(value, 0, state.map.height); markMapDirty(); draw();
         }),
         labeledNumber('Heading', camera.headingDegrees ?? '', (value) => {
           camera.headingDegrees = Number.isFinite(value) ? clamp(value, 0, 359.999) : undefined;
-          markDirty(); draw();
+          markMapDirty(); draw();
+        }),
+        labeledNumber('FOV °', camera.fovDegrees ?? '', (value) => {
+          if (Number.isFinite(value)) camera.fovDegrees = clamp(value, 10, 360); else delete camera.fovDegrees;
+          markMapDirty(); draw();
         }),
       );
 
       const actions = document.createElement('div');
       actions.className = 'tool-row';
-      actions.append(button(camera.position ? 'Select' : 'Place', 'btn-secondary', () => { placeCamera(camera); markDirty(); renderCameraRows(); draw(); }));
+      actions.append(button(camera.position ? 'Select' : 'Place', 'btn-secondary', () => {
+        if (placeCamera(camera)) markMapDirty();
+        renderCameraRows();
+        draw();
+      }));
       actions.append(button('Remove', 'btn-danger', () => {
         state.map.cameras = state.map.cameras.filter((item) => item !== camera);
         if (state.selectedId === camera.id) state.selectedId = state.map.cameras[0]?.id ?? null;
-        markDirty(); renderCameraRows(); draw();
+        markMapDirty(); renderCameraRows(); draw();
       }));
       row.append(group, actions);
       fields.cameraList.append(row);
@@ -447,7 +536,8 @@
     }
     renderCameraRows();
     draw();
-    markDirty(`Discovered ${cameras.length} cameras. Added ${added}. Drag camera dots to exact positions, then use Homebridge Save.`);
+    const message = `Discovered ${cameras.length} cameras. Added ${added}. Drag camera dots to exact positions, then use Homebridge Save.`;
+    if (added > 0) markMapDirty(message); else markDirty(message);
   }
 
   fields.file.addEventListener('change', async () => {
@@ -484,6 +574,7 @@
         camera.position.x = clamp(camera.position.x, 0, state.map.width);
         camera.position.y = clamp(camera.position.y, 0, state.map.height);
       }
+      state.mapDirty = true;
       await stageConfig(isPdf ? 'PDF first page saved. Use the Homebridge Save button at the bottom to persist.' : 'Map image saved. Use the Homebridge Save button at the bottom to persist.');
       draw();
     } catch (error) {
@@ -513,15 +604,17 @@
   });
 
   fields.addCamera.addEventListener('click', () => {
-    const id = `camera-${state.map.cameras.length + 1}`;
+    let next = state.map.cameras.length + 1;
+    while (state.map.cameras.some((camera) => camera.id === `camera-${next}`)) next += 1;
+    const id = `camera-${next}`;
     state.map.cameras.push({
       id,
-      name: `Camera ${state.map.cameras.length + 1}`,
+      name: `Camera ${next}`,
       position: nextCameraPosition(),
       headingDegrees: 0,
     });
     state.selectedId = id;
-    markDirty();
+    markMapDirty();
     renderCameraRows();
     draw();
   });
@@ -533,9 +626,15 @@
     setStatus('Scale mode active.');
   });
 
-  for (const input of [fields.name, fields.host, fields.username, fields.password, fields.poll, fields.ignoreTls, fields.scalePixels, fields.scaleDistance, fields.scaleUnit]) {
+  fields.motionSensor.addEventListener('change', syncMotionControls);
+  for (const input of [fields.name, fields.host, fields.username, fields.password, fields.poll, fields.trailPoints, fields.ignoreTls, fields.motionSensor, fields.motionReset]) {
     input.addEventListener('input', () => markDirty());
     input.addEventListener('change', () => markDirty());
+  }
+
+  for (const input of [fields.scalePixels, fields.scaleDistance, fields.scaleUnit]) {
+    input.addEventListener('input', () => markMapDirty());
+    input.addEventListener('change', () => markMapDirty());
   }
 
   fields.deleteConfig.addEventListener('click', async () => {
@@ -546,6 +645,7 @@
     delete state.config.mapImageData;
     delete state.config.mapConfig;
     delete state.config.mapConfigPath;
+    state.mapLoadedFromPath = false;
     fields.scalePixels.value = '';
     fields.scaleDistance.value = '';
     fields.scaleUnit.value = 'ft';
@@ -563,7 +663,7 @@
     camera.position = canvasPoint(event);
     camera.headingDegrees ??= 0;
     state.selectedId = camera.id;
-    markDirty();
+    markMapDirty();
     renderCameraRows();
     draw();
   });
@@ -599,7 +699,7 @@
     } else {
       camera.headingDegrees = (Math.atan2(point.y - camera.position.y, point.x - camera.position.x) * 180 / Math.PI + 360) % 360;
     }
-    markDirty();
+    markMapDirty();
     draw();
   });
 
@@ -621,7 +721,7 @@
         state.scaleMode = false;
         state.scalePoints = [];
         fields.scaleHint.textContent = 'Enter real distance for the measured pixel span, then Save.';
-        markDirty('Scale measured. Enter real distance and Save.');
+        markMapDirty('Scale measured. Enter real distance and Save.');
       }
       draw();
     }
@@ -632,7 +732,18 @@
       homebridge.showSpinner();
       state.blocks = await homebridge.getPluginConfig();
       state.config = currentBlock();
-      state.map = structuredClone(state.config.mapConfig ?? DEFAULT_MAP);
+      if (state.config.mapConfig) {
+        state.map = structuredClone(state.config.mapConfig);
+      } else if (state.config.mapConfigPath) {
+        const loaded = await withTimeout(
+          homebridge.request('/load-map-config'),
+          'Timed out while loading configured map JSON.',
+        );
+        state.map = structuredClone(loaded.mapConfig);
+        state.mapLoadedFromPath = true;
+      } else {
+        state.map = structuredClone(DEFAULT_MAP);
+      }
       state.map.cameras = Array.isArray(state.map.cameras) ? state.map.cameras : [];
       state.selectedId = state.map.cameras[0]?.id ?? null;
       if (state.config.mapImageData) {

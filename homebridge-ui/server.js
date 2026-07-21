@@ -1,7 +1,9 @@
 import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { extname, isAbsolute, join, normalize } from 'node:path';
-import { Agent, request } from 'undici';
 import { HomebridgePluginUiServer, RequestError } from '@homebridge/plugin-ui-utils';
+import { loadConfiguredMapConfig, MapConfigLoadError } from './map-config.js';
+import { fetchBootstrap } from './protect-client.js';
+import { applyProtectControllerFallback, sanitizeProtect } from './protect-config.js';
 
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 
@@ -10,6 +12,7 @@ class TrackerMapUiServer extends HomebridgePluginUiServer {
     super();
     this.onRequest('/save-map-image', this.saveMapImage.bind(this));
     this.onRequest('/load-map-image', this.loadMapImage.bind(this));
+    this.onRequest('/load-map-config', this.loadMapConfig.bind(this));
     this.onRequest('/discover-cameras', this.discoverCameras.bind(this));
     this.ready();
   }
@@ -52,6 +55,18 @@ class TrackerMapUiServer extends HomebridgePluginUiServer {
     return { dataUrl: `data:${mime};base64,${content.toString('base64')}` };
   }
 
+  async loadMapConfig() {
+    try {
+      // Never accept a caller-supplied path: resolve it from Homebridge's saved plugin config.
+      return { mapConfig: await loadConfiguredMapConfig(this.homebridgeConfigPath) };
+    } catch (error) {
+      const message = error instanceof MapConfigLoadError
+        ? error.message
+        : 'Configured map JSON could not be loaded.';
+      throw new RequestError(message, {});
+    }
+  }
+
   async discoverCameras(payload) {
     const protect = await this.resolveProtectConfig(payload?.protect);
     if (!protect.host || !protect.username || !protect.password) {
@@ -79,61 +94,11 @@ class TrackerMapUiServer extends HomebridgePluginUiServer {
         ? config.platforms.find((platform) => platform?.platform === 'UniFi Protect')
         : undefined;
       const controller = Array.isArray(unifi?.controllers) ? unifi.controllers[0] : undefined;
-      return {
-        host: direct.host ?? controller?.address,
-        username: direct.username ?? controller?.username,
-        password: direct.password ?? controller?.password,
-        ignoreTls: direct.ignoreTls ?? true,
-      };
+      return applyProtectControllerFallback(direct, controller);
     } catch {
       return direct;
     }
   }
-}
-
-function sanitizeProtect(value) {
-  return {
-    host: typeof value?.host === 'string' ? value.host.trim() : undefined,
-    username: typeof value?.username === 'string' ? value.username : undefined,
-    password: typeof value?.password === 'string' ? value.password : undefined,
-    ignoreTls: Boolean(value?.ignoreTls),
-  };
-}
-
-async function fetchBootstrap(config) {
-  const dispatcher = config.ignoreTls ? new Agent({ connect: { rejectUnauthorized: false } }) : undefined;
-  const login = await request(url(config.host, '/api/auth/login'), {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ username: config.username, password: config.password }),
-    dispatcher,
-  });
-  if (login.statusCode < 200 || login.statusCode > 299) {
-    throw new RequestError(`Protect login failed: ${login.statusCode}`, {});
-  }
-  const cookie = login.headers['set-cookie'];
-  const sessionCookie = Array.isArray(cookie) ? cookie[0]?.split(';')[0] : String(cookie ?? '').split(';')[0];
-  if (!sessionCookie) {
-    throw new RequestError('Protect login did not return a session cookie.', {});
-  }
-
-  const bootstrap = await request(url(config.host, '/proxy/protect/api/bootstrap'), {
-    method: 'GET',
-    headers: { cookie: sessionCookie },
-    dispatcher,
-  });
-  if (bootstrap.statusCode < 200 || bootstrap.statusCode > 299) {
-    throw new RequestError(`Protect bootstrap failed: ${bootstrap.statusCode}`, {});
-  }
-  return bootstrap.body.json();
-}
-
-function url(hostValue, path) {
-  const host = /^https?:\/\//.test(hostValue) ? hostValue : `https://${hostValue}`;
-  const parsed = new URL(host);
-  parsed.pathname = path;
-  parsed.search = '';
-  return parsed.toString();
 }
 
 function extractCameras(payload) {
