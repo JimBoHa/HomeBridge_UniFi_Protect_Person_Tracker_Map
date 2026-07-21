@@ -89,10 +89,19 @@ describe('TrackerHttpServer', () => {
     expect(response.status).toBe(400);
   });
 
-  it('updates map config and returns 404 for unknown routes', async () => {
+  it('reads and updates map config while protecting it with bearer auth', async () => {
     const tracker = new PersonTracker(map, 60_000);
     server = new TrackerHttpServer(tracker, new MapRenderer(), 'secure-token-secure-token-1234', logger);
     const port = await server.start('127.0.0.1', 0);
+
+    const denied = await fetch(`http://127.0.0.1:${port}/map-config`);
+    expect(denied.status).toBe(401);
+
+    const replacement: MapConfig = {
+      width: 300,
+      height: 200,
+      cameras: [{ id: 'hall', name: 'Hall', position: { x: 50, y: 60 } }],
+    };
 
     const updated = await fetch(`http://127.0.0.1:${port}/map-config`, {
       method: 'POST',
@@ -100,13 +109,21 @@ describe('TrackerHttpServer', () => {
         authorization: 'Bearer secure-token-secure-token-1234',
         'content-type': 'application/json',
       },
-      body: JSON.stringify({
-        width: 300,
-        height: 200,
-        cameras: [{ id: 'hall', name: 'Hall', position: { x: 50, y: 60 } }],
-      }),
+      body: JSON.stringify(replacement),
     });
     expect(updated.status).toBe(202);
+
+    const read = await fetch(`http://127.0.0.1:${port}/map-config?fresh=1`, {
+      headers: { authorization: 'Bearer secure-token-secure-token-1234' },
+    });
+    expect(read.status).toBe(200);
+    expect(await read.json()).toEqual(replacement);
+  });
+
+  it('returns 404 for unknown routes', async () => {
+    const tracker = new PersonTracker(map, 60_000);
+    server = new TrackerHttpServer(tracker, new MapRenderer(), 'secure-token-secure-token-1234', logger);
+    const port = await server.start('127.0.0.1', 0);
 
     const missing = await fetch(`http://127.0.0.1:${port}/missing`);
     expect(missing.status).toBe(404);
