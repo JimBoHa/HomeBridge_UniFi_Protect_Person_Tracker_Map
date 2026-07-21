@@ -97,6 +97,18 @@ export class UniFiProtectPersonTrackerPlatform implements DynamicPlatformPlugin 
         return;
       }
 
+      protectAdapter = this.dependencies.createProtectAdapter(config.protect, (event) => {
+        try {
+          tracker.ingest(event);
+        } catch (error) {
+          this.log.warn(`Protect event ignored: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }, this.log, config.peopleTtlSeconds * 1000);
+      protectAdapter.start();
+      if (this.shutdownRequested) {
+        return;
+      }
+
       const snapshotUrl = `http://${config.bindHost}:${actualPort}/snapshot.png`;
       const { accessory, isNew } = this.getOrCreateAccessory(config.name);
       accessory.getService(this.api.hap.Service.AccessoryInformation)
@@ -129,18 +141,6 @@ export class UniFiProtectPersonTrackerPlatform implements DynamicPlatformPlugin 
         this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
       } else {
         this.api.updatePlatformAccessories([accessory]);
-      }
-
-      protectAdapter = this.dependencies.createProtectAdapter(config.protect, (event) => {
-        try {
-          tracker.ingest(event);
-        } catch (error) {
-          this.log.warn(`Protect event ignored: ${error instanceof Error ? error.message : String(error)}`);
-        }
-      }, this.log, config.peopleTtlSeconds * 1000);
-      protectAdapter.start();
-      if (this.shutdownRequested) {
-        return;
       }
 
       this.log.info(`Map snapshot available at ${snapshotUrl}`);
