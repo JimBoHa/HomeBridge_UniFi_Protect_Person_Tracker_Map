@@ -315,6 +315,25 @@ describe('MapCameraDelegate ffmpeg lifecycle', () => {
     expect(streamTerminationHandler).not.toHaveBeenCalled();
   });
 
+  it('does not warn or release the stream when ffmpeg exits with code 255 after STOP', async () => {
+    vi.useFakeTimers();
+    const child = new FakeProcess();
+    const spawner = vi.fn<ProcessSpawner>(() => child as unknown as ChildProcessWithoutNullStreams);
+    const { delegate, logger, streamTerminationHandler } = createHarness(spawner);
+    await prepareStream(delegate);
+
+    delegate.handleStreamRequest(startRequest(), vi.fn());
+    child.emit('spawn');
+    delegate.handleStreamRequest(stopRequest(), vi.fn());
+
+    child.emitExit(255, null);
+
+    expect(logger.warn).not.toHaveBeenCalled();
+    expect(logger.info).toHaveBeenCalledWith('Map stream exited');
+    expect(streamTerminationHandler).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it('does not release or terminate a stream when HomeKit reconfigures it', async () => {
     const child = new FakeProcess();
     const spawner = vi.fn<ProcessSpawner>(() => child as unknown as ChildProcessWithoutNullStreams);

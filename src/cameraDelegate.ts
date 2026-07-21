@@ -207,7 +207,7 @@ export class MapCameraDelegate implements CameraStreamingDelegate {
       }
       terminationHandled = true;
       this.cleanupSession(request.sessionID, session, ffmpegProcess);
-      if (code !== null && code !== 0) {
+      if (!session.intentionalTermination && code !== null && code !== 0) {
         this.logger.warn(`ffmpeg exited with code ${code}`);
       } else if (signal) {
         this.logger.info(`Map stream stopped by signal ${signal}`);
