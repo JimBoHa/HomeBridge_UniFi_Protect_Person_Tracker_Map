@@ -40,9 +40,9 @@ export class PersonTracker {
   }
 
   public ingest(event: ProtectPersonEvent): PersonPosition {
+    this.expire();
     const previous = this.people.get(event.personId);
     if (previous && event.timestamp < previous.timestamp) {
-      this.expire();
       return previous;
     }
 
