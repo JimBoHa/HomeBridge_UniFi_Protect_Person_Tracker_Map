@@ -91,6 +91,15 @@ export class TrackerHttpServer {
         return;
       }
 
+      if (request.method === 'GET' && pathname === '/map-config') {
+        if (!this.isAuthorized(request)) {
+          writeJson(response, 401, { error: 'unauthorized' });
+          return;
+        }
+        writeJson(response, 200, this.tracker.snapshot().map);
+        return;
+      }
+
       if (request.method === 'POST' && pathname === '/events') {
         if (!this.isAuthorized(request)) {
           writeJson(response, 401, { error: 'unauthorized' });
