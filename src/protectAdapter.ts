@@ -10,7 +10,7 @@ const EVENT_CURSOR_OVERLAP_MS = 15 * 60 * 1000;
 
 type ProtectEventBatch = {
   events: ProtectPersonEvent[];
-  latestTimestamp?: number;
+  completedThrough: number;
 };
 
 export class UniFiProtectAdapter {
@@ -113,13 +113,11 @@ export class UniFiProtectAdapter {
       }
       for (const event of events) {
         this.sink(event);
-        this.recentEvents.set(eventFingerprint(event), batch.latestTimestamp ?? end);
+        this.recentEvents.set(eventFingerprint(event), batch.completedThrough);
       }
-      if (batch.latestTimestamp !== undefined) {
-        this.lastEvent = Math.max(this.lastEvent, batch.latestTimestamp);
-        this.cursorAdvanced = true;
-        this.pruneRecentEvents();
-      }
+      this.lastEvent = Math.max(this.lastEvent, batch.completedThrough);
+      this.cursorAdvanced = true;
+      this.pruneRecentEvents();
     } catch (error) {
       if (!this.running) {
         return;
@@ -139,21 +137,16 @@ export class UniFiProtectAdapter {
 
   private async fetchEventRange(start: number, end: number): Promise<ProtectEventBatch> {
     if (start > end) {
-      return { events: [] };
+      return { events: [], completedThrough: end };
     }
 
-    const batch: ProtectEventBatch = { events: [] };
+    const events: ProtectPersonEvent[] = [];
     for (let page = 0; page < MAX_EVENT_PAGES; page += 1) {
       const payload = await this.requestEventRange(start, end, page * EVENT_PAGE_LIMIT);
       const records = protectEventRecords(payload);
-      const events = extractPersonEvents(payload, start - 1);
-      batch.events.push(...events);
-      batch.latestTimestamp = maxTimestamp(
-        batch.latestTimestamp,
-        latestProtectEventTimestamp(records) ?? latestPersonEventTimestamp(events),
-      );
+      events.push(...extractPersonEvents(payload, start - 1));
       if (records.length < EVENT_PAGE_LIMIT) {
-        return batch;
+        return { events, completedThrough: end };
       }
     }
 
@@ -362,32 +355,6 @@ function protectEventRecords(payload: unknown): unknown[] {
     return payload.data;
   }
   return [];
-}
-
-function latestProtectEventTimestamp(records: unknown[]): number | undefined {
-  let latest: number | undefined;
-  for (const record of records) {
-    if (!isRecord(record)) {
-      continue;
-    }
-    const timestamp = timestampValue(record.start ?? record.timestamp ?? record.createdAt ?? record.end);
-    latest = maxTimestamp(latest, timestamp);
-  }
-  return latest;
-}
-
-function latestPersonEventTimestamp(events: ProtectPersonEvent[]): number | undefined {
-  return events.reduce<number | undefined>((latest, event) => maxTimestamp(latest, event.timestamp), undefined);
-}
-
-function maxTimestamp(left: number | undefined, right: number | undefined): number | undefined {
-  if (left === undefined) {
-    return right;
-  }
-  if (right === undefined) {
-    return left;
-  }
-  return Math.max(left, right);
 }
 
 function eventFingerprint(event: ProtectPersonEvent): string {
