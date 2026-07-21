@@ -408,8 +408,10 @@ describe('extractPersonEvents', () => {
 
   it('overlaps the cursor so delayed events older than the latest result are not skipped', async () => {
     const now = 20_000_020_000;
-    const delayedTimestamp = now - 5_000;
-    const newerTimestamp = now - 1_000;
+    const overlapMs = 15 * 60 * 1000;
+    const delayedTimestamp = now - 5 * 60 * 1000;
+    const newerTimestamp = now - 60 * 1000;
+    const initialLookbackMs = 30 * 60 * 1000;
     vi.useFakeTimers({ now });
     const sunk: ProtectPersonEvent[] = [];
     const fetchMock = vi.fn<typeof fetch>()
@@ -428,7 +430,7 @@ describe('extractPersonEvents', () => {
       username: 'user',
       password: 'pass',
       pollSeconds: 2,
-    }, (event) => sunk.push(event), logger, fetchMock, 10_000);
+    }, (event) => sunk.push(event), logger, fetchMock, initialLookbackMs);
 
     try {
       adapter.start();
@@ -438,12 +440,50 @@ describe('extractPersonEvents', () => {
 
       const firstPoll = new URL(String(fetchMock.mock.calls[1]?.[0]));
       const secondPoll = new URL(String(fetchMock.mock.calls[2]?.[0]));
-      expect(Number(secondPoll.searchParams.get('start'))).toBeLessThanOrEqual(delayedTimestamp);
-      expect(Number(secondPoll.searchParams.get('start'))).toBeGreaterThanOrEqual(Number(firstPoll.searchParams.get('start')));
+      expect(Number(firstPoll.searchParams.get('start'))).toBe(now - initialLookbackMs + 1);
+      expect(Number(secondPoll.searchParams.get('start'))).toBe(now - overlapMs + 1);
+      expect(Number(secondPoll.searchParams.get('start'))).toBeLessThan(delayedTimestamp);
       expect(sunk).toEqual([
         expect.objectContaining({ personId: 'newer', timestamp: newerTimestamp }),
         expect.objectContaining({ personId: 'delayed', timestamp: delayedTimestamp }),
       ]);
+    } finally {
+      await adapter.stop();
+      vi.useRealTimers();
+    }
+  });
+
+  it('advances an empty exhausted range while retaining cursor overlap', async () => {
+    const now = 20_000_020_000;
+    const initialLookbackMs = 30 * 60 * 1000;
+    const overlapMs = 15 * 60 * 1000;
+    vi.useFakeTimers({ now });
+    const eventUrls: URL[] = [];
+    const fetchMock = vi.fn<typeof fetch>(async (input) => {
+      const url = new URL(String(input));
+      if (url.pathname === '/api/auth/login') {
+        return mockResponse({}, { 'set-cookie': 'TOKEN=abc; Path=/' });
+      }
+      eventUrls.push(url);
+      return mockResponse({ events: [] });
+    });
+    const adapter = new UniFiProtectAdapter({
+      host: 'protect.local',
+      username: 'user',
+      password: 'pass',
+      pollSeconds: 2,
+    }, () => undefined, logger, fetchMock, initialLookbackMs);
+
+    try {
+      adapter.start();
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(2_000);
+
+      expect(eventUrls).toHaveLength(2);
+      expect(Number(eventUrls[0]?.searchParams.get('start'))).toBe(now - initialLookbackMs + 1);
+      expect(Number(eventUrls[0]?.searchParams.get('end'))).toBe(now);
+      expect(Number(eventUrls[1]?.searchParams.get('start'))).toBe(now - overlapMs + 1);
+      expect(Number(eventUrls[1]?.searchParams.get('end'))).toBe(now + 2_000);
     } finally {
       await adapter.stop();
       vi.useRealTimers();
@@ -502,9 +542,93 @@ describe('extractPersonEvents', () => {
         [firstStart, now, 0],
         [firstStart, now, 1000],
       ]);
-      expect(eventUrls[2]?.searchParams.get('start')).toBe(String(firstStart + 299_001));
+      expect(eventUrls[2]?.searchParams.get('start')).toBe(String(now - 15 * 60 * 1000 + 1));
       expect(eventUrls[2]?.searchParams.get('offset')).toBe('0');
       expect(sunk).toHaveLength(1200);
+    } finally {
+      await adapter.stop();
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not advance the event cursor after a failed range', async () => {
+    const now = 20_000_020_000;
+    const initialLookbackMs = 30 * 60 * 1000;
+    vi.useFakeTimers({ now });
+    const warn = vi.fn();
+    const eventUrls: URL[] = [];
+    let eventRequest = 0;
+    const fetchMock = vi.fn<typeof fetch>(async (input) => {
+      const url = new URL(String(input));
+      if (url.pathname === '/api/auth/login') {
+        return mockResponse({}, { 'set-cookie': 'TOKEN=abc; Path=/' });
+      }
+      eventUrls.push(url);
+      eventRequest += 1;
+      if (eventRequest === 1) {
+        throw new Error('Protect network unavailable');
+      }
+      return mockResponse({ events: [] });
+    });
+    const adapter = new UniFiProtectAdapter({
+      host: 'protect.local',
+      username: 'user',
+      password: 'pass',
+      pollSeconds: 2,
+    }, () => undefined, { ...logger, warn }, fetchMock, initialLookbackMs);
+
+    try {
+      adapter.start();
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(2_000);
+
+      expect(warn).toHaveBeenCalledWith('UniFi Protect poll failed: Protect network unavailable');
+      expect(eventUrls).toHaveLength(2);
+      expect(eventUrls[1]?.searchParams.get('start')).toBe(eventUrls[0]?.searchParams.get('start'));
+    } finally {
+      await adapter.stop();
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not advance the event cursor when the backlog cap is reached', async () => {
+    const now = 20_000_020_000;
+    const initialLookbackMs = 30 * 60 * 1000;
+    vi.useFakeTimers({ now });
+    const warn = vi.fn();
+    const eventUrls: URL[] = [];
+    const fullPage = Array.from({ length: 1000 }, (_, index) => ({
+      id: `vehicle-${index}`,
+      type: 'vehicle',
+      start: now - index,
+    }));
+    let eventRequest = 0;
+    const fetchMock = vi.fn<typeof fetch>(async (input) => {
+      const url = new URL(String(input));
+      if (url.pathname === '/api/auth/login') {
+        return mockResponse({}, { 'set-cookie': 'TOKEN=abc; Path=/' });
+      }
+      eventUrls.push(url);
+      eventRequest += 1;
+      return mockResponse(eventRequest <= 64 ? fullPage : []);
+    });
+    const adapter = new UniFiProtectAdapter({
+      host: 'protect.local',
+      username: 'user',
+      password: 'pass',
+      pollSeconds: 2,
+    }, () => undefined, { ...logger, warn }, fetchMock, initialLookbackMs);
+
+    try {
+      adapter.start();
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(2_000);
+
+      expect(warn).toHaveBeenCalledWith('UniFi Protect poll failed: Protect event backlog exceeded 64000 events; refusing to advance cursor');
+      expect(eventUrls).toHaveLength(65);
+      expect(eventUrls[63]?.searchParams.get('offset')).toBe('63000');
+      expect(eventUrls[64]?.searchParams.get('offset')).toBe('0');
+      expect(eventUrls[64]?.searchParams.get('start')).toBe(eventUrls[0]?.searchParams.get('start'));
     } finally {
       await adapter.stop();
       vi.useRealTimers();
