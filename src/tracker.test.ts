@@ -89,6 +89,20 @@ describe('PersonTracker', () => {
     expect(tracker.snapshot().people.map((person) => person.personId)).toEqual(['new']);
   });
 
+  it('does not inherit state when an id returns after ttl without a snapshot', () => {
+    let now = 1_000;
+    const tracker = new PersonTracker(map, 100, () => now, 3);
+    tracker.ingest({ personId: 'p1', name: 'Ada', cameraId: 'hall', timestamp: now, path: [{ x: 10, y: 10 }] });
+    now = 1_050;
+    tracker.ingest({ personId: 'p1', cameraId: 'hall', timestamp: now, path: [{ x: 40, y: 10 }] });
+
+    now = 1_200;
+    const returned = tracker.ingest({ personId: 'p1', cameraId: 'hall', timestamp: now, path: [{ x: 80, y: 10 }] });
+
+    expect(returned.name).toBe('p1');
+    expect(returned.trail).toEqual([]);
+  });
+
   it('releases color assignments when people expire', () => {
     let now = 1_000;
     const tracker = new PersonTracker(map, 100, () => now);
