@@ -127,6 +127,7 @@ describe('Homebridge map editor UI', () => {
     await waitFor(() => element('status').textContent.startsWith('Ready.'));
     expect(requestCalls).toEqual([['/load-map-config']]);
     expect(element('camera-list').children).toHaveLength(1);
+    expect(element('motion-sensor').listeners.get('change')).toHaveLength(2);
 
     element('protect-username').value = 'new-user';
     element('protect-username').dispatch('input');
@@ -138,15 +139,26 @@ describe('Homebridge map editor UI', () => {
     expect(credentialsStage).not.toHaveProperty('mapConfig');
 
     const cameraRow = element('camera-list').children[0];
-    const nameInput = cameraRow.children[0].children[1].children[1];
-    nameInput.value = 'Updated Front Door';
-    nameInput.dispatch('input');
+    const fovInput = cameraRow.children[0].children[5].children[1];
+    fovInput.value = '120';
+    fovInput.dispatch('input');
     await waitFor(() => stagedBlocks.length === 2);
 
     expect(stagedBlocks[1][0].mapConfig).toMatchObject({
       width: 640,
       height: 480,
-      cameras: [{ id: 'front', name: 'Updated Front Door', position: { x: 40, y: 60 } }],
+      cameras: [{ id: 'front', fovDegrees: 120 }],
+    });
+
+    const nameInput = cameraRow.children[0].children[1].children[1];
+    nameInput.value = 'Updated Front Door';
+    nameInput.dispatch('input');
+    await waitFor(() => stagedBlocks.length === 3);
+
+    expect(stagedBlocks[2][0].mapConfig).toMatchObject({
+      width: 640,
+      height: 480,
+      cameras: [{ id: 'front', name: 'Updated Front Door', position: { x: 40, y: 60 }, fovDegrees: 120 }],
     });
   });
 });

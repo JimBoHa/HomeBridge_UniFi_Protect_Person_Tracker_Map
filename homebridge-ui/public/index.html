@@ -396,7 +396,7 @@
         }),
         labeledNumber('FOV °', camera.fovDegrees ?? '', (value) => {
           if (Number.isFinite(value)) camera.fovDegrees = clamp(value, 10, 360); else delete camera.fovDegrees;
-          markDirty(); draw();
+          markMapDirty(); draw();
         }),
       );
 
@@ -626,7 +626,6 @@
     setStatus('Scale mode active.');
   });
 
-  fields.motionSensor.addEventListener('change', syncMotionControls);
   fields.motionSensor.addEventListener('change', syncMotionControls);
   for (const input of [fields.name, fields.host, fields.username, fields.password, fields.poll, fields.trailPoints, fields.ignoreTls, fields.motionSensor, fields.motionReset]) {
     input.addEventListener('input', () => markDirty());
