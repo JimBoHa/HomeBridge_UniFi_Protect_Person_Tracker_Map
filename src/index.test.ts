@@ -135,14 +135,17 @@ describe('UniFiProtectPersonTrackerPlatform lifecycle', () => {
     const configureController = vi.fn(() => {
       throw new Error('controller setup failed');
     });
+    const accessory = createAccessory(configureController);
     const platform = new UniFiProtectPersonTrackerPlatform(createLogger(), config, api, dependencies);
-    platform.configureAccessory(createAccessory(configureController));
+    platform.configureAccessory(accessory);
 
     emit(APIEvent.DID_FINISH_LAUNCHING);
 
     await expect(getLaunchPromise(platform)).rejects.toThrow('controller setup failed');
     expect(httpServer.stop).toHaveBeenCalledOnce();
-    expect(dependencies.createProtectAdapter).not.toHaveBeenCalled();
+    expect(protectAdapter.start).toHaveBeenCalledOnce();
+    expect(protectAdapter.stop).toHaveBeenCalledOnce();
+    expect(api.updatePlatformAccessories).not.toHaveBeenCalled();
   });
 
   it('stops a partially started adapter when its startup fails', async () => {
@@ -162,13 +165,16 @@ describe('UniFiProtectPersonTrackerPlatform lifecycle', () => {
       createProtectAdapter: vi.fn(() => protectAdapter),
     };
     const { api, emit } = createApi();
+    const accessory = createAccessory();
     const platform = new UniFiProtectPersonTrackerPlatform(createLogger(), config, api, dependencies);
-    platform.configureAccessory(createAccessory());
+    platform.configureAccessory(accessory);
 
     emit(APIEvent.DID_FINISH_LAUNCHING);
 
     await expect(getLaunchPromise(platform)).rejects.toThrow('adapter startup failed');
     expect(protectAdapter.stop).toHaveBeenCalledOnce();
     expect(httpServer.stop).toHaveBeenCalledOnce();
+    expect(accessory.configureController).not.toHaveBeenCalled();
+    expect(api.updatePlatformAccessories).not.toHaveBeenCalled();
   });
 });
