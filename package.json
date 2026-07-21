@@ -29,7 +29,7 @@
     "test:coverage": "vitest run --coverage",
     "lint": "eslint .",
     "prepare": "npm run build",
-    "security": "npm audit --audit-level=moderate --omit=dev",
+    "security": "npm audit --audit-level=moderate",
     "verify": "npm run build && npm run lint && npm test && npm run security"
   },
   "dependencies": {
