@@ -85,6 +85,8 @@ curl -X POST http://127.0.0.1:PORT/events \
 
 ## Development
 
+Use a supported Node.js LTS release, version 22.13.0 or newer. Node 20 has reached end of life; the repository CI uses Node 22.
+
 ```bash
 npm ci
 npm run verify
